@@ -95,7 +95,8 @@ async def run_scraper(config: ScraperConfig, headless: bool = True) -> ScrapeRes
                     hotel, 
                     config, 
                     start_date,
-                    on_rooms_scraped=output.append_rooms_to_csv  # Save immediately after each date
+                    on_rooms_scraped=output.append_rooms_to_csv,  # Save immediately after each date
+                    session_id=output.timestamp  # Use same folder for all HTMLs in this run
                 )
                 
                 hotel_with_rooms.rooms = rooms

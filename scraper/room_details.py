@@ -132,6 +132,7 @@ async def scrape_hotel_rooms(
     hotel: HotelInfo,
     check_in: datetime,
     config: ScraperConfig,
+    session_id: Optional[str] = None,  # Add this line
 ) -> list[RoomData]:
     """
     Scrape room information for a specific hotel and date.
@@ -215,9 +216,12 @@ async def scrape_hotel_rooms(
         
         # Save rendered HTML for debugging (first hotel only to avoid too many files)
         import os
-        debug_html_path = os.path.join("output", f"debug_rendered_{hotel.name[:30].replace(' ', '_')}_{check_in.strftime('%Y%m%d')}.html")
+        if session_id is None:
+            session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_folder = os.path.join("output", "debug_html", session_id)
+        os.makedirs(debug_folder, exist_ok=True)  # Create the full path
+        debug_html_path = os.path.join(debug_folder, f"debug_{hotel.name[:30].replace(' ', '_')}_{check_in.strftime('%Y%m%d')}.html")
         if not os.path.exists(debug_html_path):
-            os.makedirs("output", exist_ok=True)
             with open(debug_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             logger.info(f"Saved rendered HTML to {debug_html_path}")
@@ -875,6 +879,7 @@ async def scrape_hotel_rooms_for_dates(
     config: ScraperConfig,
     start_date: Optional[datetime] = None,
     on_rooms_scraped: Optional[Callable[[list[RoomData]], None]] = None,
+    session_id: Optional[str] = None,  # Add this line
 ) -> list[RoomData]:
     """
     Scrape room information for all dates in the configured range.
@@ -901,7 +906,7 @@ async def scrape_hotel_rooms_for_dates(
         
         logger.info(f"Scraping {hotel.name} for {check_in.date()} ({day_offset + 1}/{config.days_ahead})")
         
-        rooms = await scrape_hotel_rooms(page, hotel, check_in, config)
+        rooms = await scrape_hotel_rooms(page, hotel, check_in, config, session_id=session_id)
         all_rooms.extend(rooms)
         
         # Call callback to save rooms immediately after each date

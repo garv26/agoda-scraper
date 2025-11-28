@@ -20,12 +20,16 @@ class OutputManager:
         self.config = config
         self.output_dir = Path(output_dir or config.output_dir)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create subdirectories for CSV and JSON
+        self.csv_dir = self.output_dir / "csv"
+        self.json_dir = self.output_dir / "json"
         self._ensure_output_dir()
         
         # File paths
-        self.csv_path = self.output_dir / f"agoda_rooms_{self.timestamp}.csv"
-        self.json_path = self.output_dir / f"agoda_rooms_{self.timestamp}.json"
-        self.progress_path = self.output_dir / f"agoda_progress_{self.timestamp}.json"
+        self.csv_path = self.csv_dir / f"agoda_rooms_{self.timestamp}.csv"
+        self.json_path = self.json_dir / f"agoda_rooms_{self.timestamp}.json"
+        self.progress_path = self.json_dir / f"agoda_progress_{self.timestamp}.json"
         
         # CSV headers - includes hotel-level info
         self.csv_headers = [
@@ -54,6 +58,8 @@ class OutputManager:
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_dir.mkdir(parents=True, exist_ok=True)
+        self.json_dir.mkdir(parents=True, exist_ok=True)
 
     def _init_csv(self):
         """Initialize CSV file with headers."""

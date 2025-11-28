@@ -41,3 +41,8 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
+
+# Sample HTML files (Agoda page snapshots for inspection)
+*.html
+
+agoda-hotel-scraper.plan.md
