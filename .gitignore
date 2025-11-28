@@ -18,6 +18,9 @@ output/
 # Debug files
 debug_*.html
 
+# Sample HTML files (Agoda page snapshots)
+*.html
+
 # IDE
 .idea/
 .vscode/
