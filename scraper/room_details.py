@@ -293,20 +293,49 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         await page.wait_for_load_state("domcontentloaded", timeout=10000)
     except Exception:
         pass
-    
-    # Try to click on the "Rooms" section/tab to trigger room loading
+
+    # Wait for network to settle initially
     try:
-        rooms_tab = page.locator('a:has-text("Rooms"), button:has-text("Rooms"), [data-element-name*="rooms"]').first
-        if await rooms_tab.is_visible(timeout=3000):
-            await rooms_tab.click()
-            await asyncio.sleep(2)
+        await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
     
+    # # Try to click on the "Rooms" section/tab to trigger room loading
+    # try:
+    #     rooms_tab = page.locator('a:has-text("Rooms"), button:has-text("Rooms"), [data-element-name*="rooms"]').first
+    #     if await rooms_tab.is_visible(timeout=3000):
+    #         await rooms_tab.click()
+    #         await asyncio.sleep(2)
+    # except Exception:
+    #     pass
+    # Try to click on the "Rooms" section/tab to trigger room loading
+    rooms_tab_selectors = [
+        'a:has-text("Rooms")',
+        'button:has-text("Rooms")',
+        '[data-element-name*="rooms"]',
+        '[href*="#rooms"]',
+        'a[href*="roomsAndRates"]',
+        '[data-selenium*="room"]',
+        # Scroll to rooms section anchor
+        '#roomsAndRates',
+        '#rooms',
+    ]
+    
+    for selector in rooms_tab_selectors:
+        try:
+            elem = page.locator(selector).first
+            if await elem.is_visible(timeout=2000):
+                await elem.click()
+                logger.debug(f"Clicked rooms tab with selector: {selector}")
+                await asyncio.sleep(3)
+                break
+        except Exception:
+            continue
+    
     # Scroll down to the rooms section to trigger lazy loading
-    for i in range(3):
+    for i in range(5):
         await page.evaluate(f'''() => {{
-            window.scrollTo(0, document.body.scrollHeight * {(i+1)/4});
+            window.scrollTo(0, document.body.scrollHeight * {(i+1)/6});
         }}''')
         await asyncio.sleep(1.5)
     
@@ -331,10 +360,19 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         '[class*="ChildRoomsList"]',
         '[class*="RoomGridItem"]',
         '[data-element-name*="room"]',
+        # Additional selectors
+        '[class*="room-grid"]',
+        '[class*="RoomList"]',
+        '[data-testid*="room"]',
+        '[class*="room-card"]',
+        'div[class*="room"]',
+        # Price-based detection
+        '[class*="Price"]',
+        '[data-element-name="final-price"]',
     ]
     
     # Try multiple times with increasing wait
-    for attempt in range(3):
+    for attempt in range(5):
         for selector in room_selectors:
             try:
                 count = await page.locator(selector).count()
@@ -430,6 +468,8 @@ def parse_room_listings(html: str, hotel: HotelInfo, check_in: datetime) -> list
         {'tag': 'section', 'attrs': {'data-element-name': re.compile(r'room', re.I)}},
         # From accessibility tree: room containers have specific patterns
         {'tag': 'div', 'attrs': {'class': re.compile(r'ChildRoomsList|RoomGridItem', re.I)}},
+        {'tag': 'div', 'attrs': {'class': re.compile(r'room-card|roomCard', re.I)}},
+        {'tag': 'div', 'attrs': {'data-testid': re.compile(r'room', re.I)}},
     ]
     
     room_elements = []
@@ -487,12 +527,56 @@ def parse_room_listings(html: str, hotel: HotelInfo, check_in: datetime) -> list
     if not rooms:
         logger.debug("No room elements found with specific selectors")
     
+    # NEW FALLBACK: Extract room info from text patterns if no structured elements found
+    if not rooms:
+        logger.debug("Trying text-based room extraction as fallback")
+        rooms = extract_rooms_from_text(soup, hotel, date_str)
     # Deduplicate by room type (keep the one with lowest price)
     rooms = deduplicate_rooms(rooms)
     
     return rooms
 
-
+def extract_rooms_from_text(soup: BeautifulSoup, hotel: HotelInfo, date_str: str) -> list[RoomData]:
+    """Fallback: Extract room info from page text using regex patterns."""
+    rooms = []
+    page_text = soup.get_text(' ', strip=True)
+    
+    # Look for room type patterns followed by prices
+    room_patterns = [
+        # "Deluxe Room ... ₹3,500" or "Deluxe Room ... R . 3,500"
+        r'((?:Deluxe|Standard|Superior|Premium|Executive|Family|Luxury|Suite|Studio|Twin|Double|Single|Queen|King)[\s\w\-]*(?:Room|Suite|Bed)?)\s*(?:.*?)(?:₹|R\s*\.)\s*([\d,]+)',
+    ]
+    
+    for pattern in room_patterns:
+        matches = re.findall(pattern, page_text, re.I)
+        for match in matches:
+            room_type = match[0].strip()
+            price_str = match[1].replace(',', '')
+            
+            if not is_valid_room_name(room_type):
+                continue
+                
+            try:
+                price = float(price_str)
+                if 1000 <= price <= 500000:  # Reasonable hotel price range
+                    rooms.append(RoomData(
+                        hotel_name=hotel.name,
+                        date=date_str,
+                        room_type=room_type,
+                        price=price,
+                        currency="INR",
+                        amenities=[],
+                        is_available=True,
+                        hotel_location=hotel.location,
+                        hotel_rating=hotel.rating,
+                        hotel_star_rating=hotel.star_rating,
+                        hotel_review_count=hotel.review_count,
+                    ))
+            except ValueError:
+                continue
+    
+    return rooms
+    
 def extract_room_data(room_elem, hotel: HotelInfo, date_str: str) -> Optional[RoomData]:
     """
     Extract room information from a room element.

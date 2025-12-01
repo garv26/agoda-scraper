@@ -125,6 +125,12 @@ async def navigate_to_search(
         
         # Handle potential popups or overlays
         await dismiss_popups(page)
+
+        # Wait for network to settle
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         
         # Wait for hotel cards to appear - selectors based on actual Agoda structure
         # From browser inspection: hotels are in "group" with name "Property Card"
@@ -134,13 +140,30 @@ async def navigate_to_search(
             '[data-element-name="property-card"]',
             '.PropertyCard',
             'li[data-hotelid]',
-            '[role="listitem"] a[href*="hotel"]',  # From accessibility tree
+            '[role="listitem"] a[href*="hotel"]', 
+            
+            '[data-testid="property-card"]',
+            '[class*="PropertyCard"]',
+            'ol[data-selenium="hotel-list"] li',
+            '[data-element-name="property-card-container"]', # From accessibility tree
         ]
         
         for selector in selectors_to_try:
             if await wait_for_element(page, selector, timeout=10000):
                 logger.info(f"Found hotel cards with selector: {selector}")
                 return True
+
+         # If no specific selector found, try scrolling to trigger lazy load
+        logger.warning("No hotel cards found initially, scrolling to trigger lazy load...")
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 500)")
+            await random_delay(1, 2)
+            
+            # Re-check selectors after scroll
+            for selector in selectors_to_try:
+                if await wait_for_element(page, selector, timeout=3000):
+                    logger.info(f"Found hotel cards after scroll with selector: {selector}")
+                    return True
         
         # If no specific selector found, check if we have any content
         content = await page.content()
@@ -275,6 +298,10 @@ def parse_hotel_listings(html: str, max_hotels: int = 50) -> list[HotelInfo]:
         {'tag': 'div', 'attrs': {'data-cy': re.compile(r'property-card', re.I)}},
         # Pattern: listitem with "Property Card" in role=group
         {'tag': 'li', 'attrs': {'role': 'listitem'}},
+
+         # Additional selectors
+        {'tag': 'div', 'attrs': {'data-testid': re.compile(r'property', re.I)}},
+        {'tag': 'div', 'attrs': {'class': re.compile(r'property-card', re.I)}},
     ]
     
     hotel_cards = []
@@ -293,10 +320,12 @@ def parse_hotel_listings(html: str, max_hotels: int = 50) -> list[HotelInfo]:
             href = link.get('href', '')
             if href and 'hotel' in href.lower() and href not in seen_hotels:
                 # Get parent container
-                parent = link.find_parent(['li', 'div', 'article'])
-                if parent and parent not in hotel_cards:
-                    hotel_cards.append(parent)
-                    seen_hotels.add(href)
+                normalized = re.sub(r'\?.*$', '', href)  # Remove query params
+                if normalized not in seen_hotels:
+                    parent = link.find_parent(['li', 'div', 'article'])
+                    if parent and parent not in hotel_cards:
+                        hotel_cards.append(parent)
+                        seen_hotels.add(normalized)
     
     if not hotel_cards:
         # Last resort: try to find any list items with hotel-like content
