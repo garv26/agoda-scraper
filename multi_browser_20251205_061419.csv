@@ -1,0 +1,20 @@
+hotel_name,hotel_location,hotel_rating,hotel_star_rating,hotel_review_count,date,room_type,price,currency,amenities,availability,cancellation_policy,meal_plan
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-06,Classic Room,2818.0,INR,Wi-Fi [free];Minibar;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-06,Luxury Rooms,3937.0,INR,Wi-Fi [free];Minibar;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+The Kurki Heritage,"Shyam Nagar, Jaipur",8.9,4,237,2025-12-06,Standard Room,3626.0,INR,TV;Wi-Fi [free];Pool Access;Gym Access;Minibar;Parking;Breakfast;Air Conditioning;WiFi;Last Minute Special. Price includes 5% discount!,Available,,Breakfast Included
+The Kurki Heritage,"Shyam Nagar, Jaipur",8.9,4,237,2025-12-06,Premium Executive Room,4290.0,INR,TV;Pool Access;Gym Access;Free Wi-Fi;Minibar;Parking;Breakfast;Air Conditioning;WiFi;Last Minute Special. Price includes 5% discount!;Balcony,Available,,Breakfast Included
+The Kurki Heritage,"Shyam Nagar, Jaipur",8.9,4,237,2025-12-06,Maharani Suite,6607.0,INR,TV;Wi-Fi [free];Pool Access;Gym Access;Minibar;Parking;Breakfast;Air Conditioning;WiFi;Last Minute Special. Price includes 5% discount!,Available,,Breakfast Included
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-07,Classic Twin Room,2164.0,INR,Wi-Fi [free];Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-07,Comfort Room for 2 People,2488.0,INR,Wi-Fi [free];Parking;Breakfast;Air Conditioning;WiFi,Available,,Breakfast Included
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-07,Classic Room,2818.0,INR,Wi-Fi [free];Minibar;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+Hotel Ratangarh Palace,"Gopalbari, Jaipur",7.3,3,474,2025-12-07,Luxury Rooms,3933.0,INR,Wi-Fi [free];Minibar;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+The Kurki Heritage,"Shyam Nagar, Jaipur",8.9,4,237,2025-12-07,Premium Executive Room,6234.0,INR,TV;Pool Access;Gym Access;Free Wi-Fi;Minibar;Parking;Breakfast;Air Conditioning;WiFi;Balcony,Available,,Breakfast Included
+The Kurki Heritage,"Shyam Nagar, Jaipur",8.9,4,237,2025-12-07,Maharani Suite,8715.0,INR,TV;Pool Access;Wi-Fi [free];Gym Access;Minibar;Parking;Breakfast;Air Conditioning;WiFi,Available,,Breakfast Included
+Hotel Gandharva - A Green Hotel,"Sindhi Camp, Jaipur",7.5,3,881,2025-12-06,Deluxe Room,2608.0,INR,Wi-Fi [free];Super Saver;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+Hotel Gandharva - A Green Hotel,"Sindhi Camp, Jaipur",7.5,3,881,2025-12-06,Premium Room,4385.0,INR,Wi-Fi [free];Super Saver;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+The Grand Hotels and Suites,"Shyam Nagar, Jaipur",7.5,5,4134,2025-12-06,No Rooms Found,,INR,,Not Available,,
+Hotel Gandharva - A Green Hotel,"Sindhi Camp, Jaipur",7.5,3,881,2025-12-07,Deluxe Room,2369.0,INR,Wi-Fi [free];Super Saver;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+Hotel Gandharva - A Green Hotel,"Sindhi Camp, Jaipur",7.5,3,881,2025-12-07,Premium Room,3983.0,INR,Wi-Fi [free];Super Saver;Parking;Breakfast;Air Conditioning;WiFi;City View,Available,,Breakfast Included
+The Grand Hotels and Suites,"Shyam Nagar, Jaipur",7.5,5,4134,2025-12-07,No Rooms Found,,INR,,Not Available,,
+Le Méridien Jaipur Resort & Spa,"Kukas, Jaipur",8.6,5,1138,2025-12-06,No Rooms Found,,INR,,Not Available,,
+Le Méridien Jaipur Resort & Spa,"Kukas, Jaipur",8.6,5,1138,2025-12-07,"Larger Guest room, 2 Twin",11749.0,INR,Spa Access;Minibar;Garden View;Breakfast;Air Conditioning,Available,,Breakfast Included
