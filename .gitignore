@@ -12,7 +12,7 @@ __pycache__/
 
 # Output files (scraped data)
 output/
-*.csv
+csv
 *.json
 
 # Debug files
@@ -46,3 +46,7 @@ test-results/
 *.html
 
 agoda-hotel-scraper.plan.md
+dataset_fast-agoda-scraper_2025-12-01_07-58-23-216 (1).csv
+
+jaipur_hotels1.csv
+test-jey.pem
