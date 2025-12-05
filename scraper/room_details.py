@@ -158,7 +158,26 @@ async def scrape_hotel_rooms(
     )
     
     logger.debug(f"Navigating to hotel page: {url}")
-    
+
+    # Attach a lightweight logger for Agoda's room JSON API so we can
+    # distinguish "no rooms in DOM yet" from "API returned nothing / was blocked".
+    # This only logs URL + status; it does not dump full JSON.
+    def _log_below_fold_response(response):
+        try:
+            url = response.url
+        except Exception:
+            return
+        if "BelowFoldParams/GetSecondaryData" in url:
+            try:
+                status = response.status
+            except Exception:
+                status = "?"
+            logger.info(
+                f"[Rooms API] {hotel.name} {check_in.date()} - status {status} - {url}"
+            )
+
+    page.on("response", _log_below_fold_response)
+
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(2)
@@ -185,7 +204,7 @@ async def scrape_hotel_rooms(
             return [RoomData(
                 hotel_name=hotel.name,
                 date=check_in.strftime("%Y-%m-%d"),
-                room_type="Unknown",
+                room_type="No Rooms Found",
                 price=None,
                 currency=hotel.currency,
                 amenities=[],
@@ -233,7 +252,7 @@ async def scrape_hotel_rooms(
             return [RoomData(
                 hotel_name=hotel.name,
                 date=check_in.strftime("%Y-%m-%d"),
-                room_type="Unknown",
+                room_type="No Rooms Found",
                 price=None,
                 currency=hotel.currency,
                 amenities=[],
@@ -341,8 +360,25 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
     
     # Wait for network to settle after scroll
     try:
-        await page.wait_for_load_state("networkidle", timeout=10000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
+        pass
+    
+    # Try a direct wait on typical room selectors before falling back to polling.
+    # This helps ensure React has finished injecting the room grid into the DOM.
+    direct_room_selector = (
+        '[data-ppapi="room-price"], '
+        '[data-selenium="room-panel"], '
+        '[data-selenium="room-name"], '
+        '[data-testid*="room"], '
+        '[class*="RoomGridItem"]'
+    )
+    try:
+        await page.wait_for_selector(direct_room_selector, timeout=timeout)
+        logger.debug("Room selector appeared via direct wait")
+        return True
+    except Exception:
+        # Fall back to the more exhaustive polling logic below
         pass
     
     # Additional wait for React to render

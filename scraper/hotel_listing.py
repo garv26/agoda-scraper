@@ -199,6 +199,45 @@ async def dismiss_popups(page: Page):
             pass
 
 
+async def click_next_results_page(page: Page) -> bool:
+    """
+    Click the 'Next' button on the search results, if available.
+    Returns True if navigation was triggered, False if there is no next page.
+    """
+    next_selectors = [
+        '[data-selenium="pagination-nextButton"]',
+        'button[aria-label*="Next"]',
+        'a[aria-label*="Next"]',
+        'button:has-text("Next")',
+        'a:has-text("Next")',
+    ]
+
+    for selector in next_selectors:
+        try:
+            locator = page.locator(selector).first
+            # is_visible may raise; wrap in try
+            if await locator.is_visible(timeout=2000):
+                # Check disabled state if present
+                aria_disabled = await locator.get_attribute("aria-disabled")
+                if aria_disabled == "true":
+                    continue
+
+                await locator.click()
+                logger.info(f"Clicked next page button with selector: {selector}")
+                # Wait a bit for navigation / content change
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
+                await random_delay(1, 2)
+                return True
+        except Exception:
+            continue
+
+    logger.info("No next page button found (or it is disabled)")
+    return False
+
+
 async def scrape_hotel_listings(
     page: Page,
     config: ScraperConfig,
@@ -206,70 +245,93 @@ async def scrape_hotel_listings(
 ) -> list[HotelInfo]:
     """
     Scrape hotel listings from Agoda search results.
-    
-    Args:
-        page: Playwright page instance
-        config: Scraper configuration
-        check_in: Check-in date for the search
-    
-    Returns:
-        List of HotelInfo objects
     """
     # Navigate to search results
     if not await navigate_to_search(page, config, check_in):
         logger.error("Failed to navigate to search results")
         return []
     
-    # Scroll to load more hotels
-    logger.info(f"Scrolling to load at least {config.num_hotels} hotels...")
-    
-    # Try different selectors for counting hotels
-    # [data-selenium="hotel-name"] is confirmed to work from testing
-    count_selectors = [
-        '[data-selenium="hotel-name"]',  # This works! Found in browser testing
-        '[data-selenium="hotel-item"]',
-        '.PropertyCard',
-        '[data-element-name="property-card"]',
-        'li[data-hotelid]',
-        'a[href*="/hotel/"][href*=".html"]',  # Hotel links
-    ]
-    
-    hotel_count = 0
-    used_selector = None
-    
-    for selector in count_selectors:
-        elements = await page.query_selector_all(selector)
-        if len(elements) > 0:
-            used_selector = selector
-            hotel_count = len(elements)
+    all_hotels: list[HotelInfo] = []
+    seen_urls: set[str] = set()
+    max_pages = 20  # safety cap so we don't loop forever
+    current_page = 1
+
+    while current_page <= max_pages and len(all_hotels) < config.num_hotels:
+        logger.info(f"Scraping search results page {current_page}")
+
+        # Scroll to load more hotels on the current page
+        logger.info(f"Scrolling to load at least {config.num_hotels} hotels (page {current_page})...")
+        
+        # Try different selectors for counting hotels
+        count_selectors = [
+            '[data-selenium="hotel-name"]',
+            '[data-selenium="hotel-item"]',
+            '.PropertyCard',
+            '[data-element-name="property-card"]',
+            'li[data-hotelid]',
+            'a[href*="/hotel/"][href*=".html"]',
+        ]
+        
+        hotel_count = 0
+        used_selector = None
+        
+        for selector in count_selectors:
+            elements = await page.query_selector_all(selector)
+            if len(elements) > 0:
+                used_selector = selector
+                hotel_count = len(elements)
+                break
+        
+        if used_selector:
+            logger.info(f"Using selector '{used_selector}' for counting hotels")
+            hotel_count = await scroll_to_bottom(
+                page,
+                scroll_pause_range=config.delays.scroll_pause,
+                max_scrolls=150,
+                target_count=config.num_hotels,
+                count_selector=used_selector,
+            )
+            logger.info(f"Loaded {hotel_count} hotels after scrolling (page {current_page})")
+        else:
+            logger.warning("No working selector found, scrolling without counting")
+            await scroll_to_bottom(
+                page,
+                scroll_pause_range=config.delays.scroll_pause,
+                max_scrolls=50,
+            )
+        
+        # Parse the page content for this page
+        html = await page.content()
+        page_hotels = parse_hotel_listings(html, max_hotels=config.num_hotels)
+        
+        # Merge, deduplicating by URL
+        added_this_page = 0
+        for h in page_hotels:
+            if h.url and h.url not in seen_urls:
+                seen_urls.add(h.url)
+                all_hotels.append(h)
+                added_this_page += 1
+                if len(all_hotels) >= config.num_hotels:
+                    break
+        
+        logger.info(
+            f"Extracted {len(page_hotels)} hotels from page {current_page}, "
+            f"added {added_this_page} new, total so far: {len(all_hotels)}"
+        )
+
+        # Stop if we reached target or page gave us nothing new
+        if len(all_hotels) >= config.num_hotels or added_this_page == 0:
             break
-    
-    if used_selector:
-        logger.info(f"Using selector '{used_selector}' for counting hotels")
-        # Scroll until we have enough hotels
-        hotel_count = await scroll_to_bottom(
-            page,
-            scroll_pause_range=config.delays.scroll_pause,
-            max_scrolls=150,  # Increased for loading more hotels
-            target_count=config.num_hotels,
-            count_selector=used_selector,
-        )
-        logger.info(f"Loaded {hotel_count} hotels after scrolling")
-    else:
-        logger.warning("No working selector found, scrolling without counting")
-        # Just scroll for a while
-        await scroll_to_bottom(
-            page,
-            scroll_pause_range=config.delays.scroll_pause,
-            max_scrolls=50,  # Increased
-        )
-    
-    # Parse the page content
-    html = await page.content()
-    hotels = parse_hotel_listings(html, config.num_hotels)
-    
-    logger.info(f"Extracted {len(hotels)} hotels from search results")
-    return hotels
+
+        # Try moving to the next page
+        moved = await click_next_results_page(page)
+        if not moved:
+            break
+
+        current_page += 1
+
+    logger.info(f"Returning {len(all_hotels)} hotels after {current_page} page(s)")
+    return all_hotels
 
 
 def parse_hotel_listings(html: str, max_hotels: int = 50) -> list[HotelInfo]:
