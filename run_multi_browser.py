@@ -87,8 +87,8 @@ Memory Requirements:
     
     parser.add_argument(
         "--hotels-csv", "-i",
-        default="jaipur_hotels2.csv",
-        help="Input CSV with hotel list (default: jaipur_hotels2.csv)"
+        default="split_hotels/hotels_part_1.csv",
+        help="Input CSV with hotel list (default: split_hotels/hotels_part_1.csv)"
     )
     
     parser.add_argument(

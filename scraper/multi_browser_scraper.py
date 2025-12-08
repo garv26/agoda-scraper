@@ -712,8 +712,8 @@ def load_hotels_from_csv(filepath: str) -> List[HotelInfo]:
                     name=row.get("name", "Unknown"),
                     url=row.get("url", ""),
                     rating=float(row["rating"]) if row.get("rating") and row["rating"].strip() else None,
-                    review_count=int(row["review_count"]) if row.get("review_count") and row["review_count"].strip() else None,
-                    star_rating=int(row["star_rating"]) if row.get("star_rating") and row["star_rating"].strip() else None,
+                    review_count=int(float(row["review_count"])) if row.get("review_count") and row["review_count"].strip() else None,
+                    star_rating=int(float(row["star_rating"])) if row.get("star_rating") and row["star_rating"].strip() else None,
                     location=row.get("location"),
                 ))
             except (ValueError, KeyError) as e:
