@@ -3,6 +3,8 @@
 import re
 import logging
 import asyncio
+import os
+import json
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 from playwright.async_api import Page
@@ -127,21 +129,188 @@ def is_valid_room_name(name: str) -> bool:
     return True
 
 
+def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[RoomData]:
+    """
+    Parse room data from Agoda's roomGridData API response.
+    
+    Args:
+        json_data: The full API response (could be nested in various ways)
+        hotel: Hotel information
+        date_str: Date string YYYY-MM-DD
+    
+    Returns:
+        List of RoomData objects
+    """
+    rooms = []
+    
+    # Navigate to masterRooms array
+    # The data might be at different paths depending on the API endpoint
+    master_rooms = None
+    
+    # Try different possible paths
+    if 'roomGridData' in json_data:
+        room_grid = json_data.get('roomGridData', {})
+        if isinstance(room_grid, dict):
+            master_rooms = room_grid.get('masterRooms', [])
+    elif 'datelessMasterRoomInfo' in json_data:
+        master_rooms = json_data.get('datelessMasterRoomInfo', [])
+    elif 'masterRooms' in json_data:
+        master_rooms = json_data.get('masterRooms', [])
+    elif 'data' in json_data and isinstance(json_data['data'], dict):
+        master_rooms = json_data['data'].get('masterRooms', [])
+    
+    if not master_rooms:
+        logger.warning(f"No masterRooms found in JSON for {hotel.name}")
+        return rooms
+    
+    logger.debug(f"Found {len(master_rooms)} master rooms in JSON")
+    
+    for master_room in master_rooms:
+        try:
+            # Extract room name (already clean!)
+            room_name = master_room.get('name', '').strip()
+            
+            if not room_name or not is_valid_room_name(room_name):
+                logger.debug(f"Skipping invalid room name: {room_name}")
+                continue
+            
+            # Extract price
+            price = master_room.get('cheapestPrice') or master_room.get('beforeDiscountPrice')
+            
+            # Check availability
+            availability = master_room.get('firstRoomAvailability', 0)
+            is_available = availability > 0 and price is not None
+            
+            # Extract amenities from multiple sources
+            amenities = []
+            
+            # From amenities array
+            if master_room.get('amenities'):
+                for amenity in master_room['amenities']:
+                    if isinstance(amenity, dict):
+                        amenity_name = amenity.get('name') or amenity.get('title', '')
+                        if amenity_name:
+                            amenities.append(amenity_name)
+                    elif isinstance(amenity, str):
+                        amenities.append(amenity)
+            
+            # From features array
+            if master_room.get('features'):
+                for feature in master_room['features']:
+                    if isinstance(feature, dict) and feature.get('title'):
+                        title = feature['title']
+                        # Skip size info, keep actual amenities
+                        if 'Room size:' not in title and 'bed' not in title.lower():
+                            amenities.append(title)
+            
+            # From facility groups
+            if master_room.get('facilityGroups'):
+                for group in master_room['facilityGroups']:
+                    if isinstance(group, dict) and group.get('name'):
+                        amenities.append(group['name'])
+            
+            # Clean amenities
+            amenities = [a.strip() for a in amenities if a and isinstance(a, str)]
+            amenities = list(set(amenities))  # Remove duplicates
+            
+            # Extract bed type
+            bed_type = None
+            bed_config = master_room.get('bedConfigurationSummary') or master_room.get('beddingConfig')
+            if bed_config and isinstance(bed_config, dict):
+                bed_type = bed_config.get('title') or bed_config.get('name')
+            
+            # If not found, check numberOfBeds field
+            if not bed_type and master_room.get('numberOfBeds'):
+                bed_type = master_room['numberOfBeds']
+            
+            # Extract meal plan from propagandaMessages
+            meal_plan = None
+            propaganda = master_room.get('propagandaMessages', [])
+            for msg in propaganda:
+                if isinstance(msg, dict):
+                    title = msg.get('title', '').lower()
+                    if 'breakfast' in title:
+                        meal_plan = msg.get('title', 'Breakfast Included')
+                        break
+            
+            # Also check filters in sub-rooms
+            if not meal_plan and master_room.get('rooms'):
+                for sub_room in master_room['rooms']:
+                    filters = sub_room.get('filters', [])
+                    for f in filters:
+                        if isinstance(f, dict):
+                            filter_name = f.get('name', '').lower()
+                            if 'breakfast' in filter_name:
+                                meal_plan = f.get('name', 'Breakfast Included')
+                                break
+                    if meal_plan:
+                        break
+            
+            # Extract cancellation policy
+            cancellation_policy = None
+            if master_room.get('rooms'):
+                for sub_room in master_room['rooms']:
+                    # Check for cancellation info in filters or properties
+                    filters = sub_room.get('filters', [])
+                    for f in filters:
+                        if isinstance(f, dict):
+                            filter_id = f.get('id', '').lower()
+                            filter_name = f.get('name', '').lower()
+                            if 'refund' in filter_id or 'refund' in filter_name or 'cancel' in filter_name:
+                                cancellation_policy = f.get('name')
+                                break
+                    if cancellation_policy:
+                        break
+            
+            # Extract max occupancy
+            max_occupancy = master_room.get('maxOccupancy')
+            
+            # Create RoomData object
+            room_data = RoomData(
+                hotel_name=hotel.name,
+                date=date_str,
+                room_type=room_name,
+                price=float(price) if price else None,
+                currency="INR",  # Could extract from API if available
+                amenities=amenities,
+                is_available=is_available,
+                cancellation_policy=cancellation_policy,
+                meal_plan=meal_plan,
+                bed_type=bed_type,
+                max_occupancy=max_occupancy,
+                hotel_location=hotel.location,
+                hotel_rating=hotel.rating,
+                hotel_star_rating=hotel.star_rating,
+                hotel_review_count=hotel.review_count,
+            )
+            
+            rooms.append(room_data)
+            logger.debug(f"Parsed room from JSON: {room_name} - ₹{price}")
+            
+        except Exception as e:
+            logger.warning(f"Error parsing master room from JSON: {e}")
+            continue
+    
+    return deduplicate_rooms(rooms)
+
+
 async def scrape_hotel_rooms(
     page: Page,
     hotel: HotelInfo,
     check_in: datetime,
     config: ScraperConfig,
-    session_id: Optional[str] = None,  # Add this line
+    session_id: Optional[str] = None,
 ) -> list[RoomData]:
     """
-    Scrape room information for a specific hotel and date.
+    Scrape room information for a specific hotel and date using JSON API interception.
+    Falls back to HTML parsing if JSON is not available.
     
     Args:
         page: Playwright page instance
         hotel: Hotel information
         check_in: Check-in date
         config: Scraper configuration
+        session_id: Optional session ID for debugging
     
     Returns:
         List of RoomData objects for all available rooms
@@ -159,24 +328,43 @@ async def scrape_hotel_rooms(
     
     logger.debug(f"Navigating to hotel page: {url}")
 
-    # Attach a lightweight logger for Agoda's room JSON API so we can
-    # distinguish "no rooms in DOM yet" from "API returned nothing / was blocked".
-    # This only logs URL + status; it does not dump full JSON.
-    def _log_below_fold_response(response):
+    # Storage for API data
+    api_data = {'received': False, 'json': None}
+    
+    async def intercept_room_api(response):
+        """Intercept and capture room data API response."""
         try:
-            url = response.url
-        except Exception:
-            return
-        if "BelowFoldParams/GetSecondaryData" in url:
-            try:
+            url_str = response.url
+            # Look for the specific API endpoint
+            if "BelowFoldParams/GetSecondaryData" in url_str or "roomGrid" in url_str.lower():
                 status = response.status
-            except Exception:
-                status = "?"
-            logger.info(
-                f"[Rooms API] {hotel.name} {check_in.date()} - status {status} - {url}"
-            )
+                logger.info(f"[Rooms API] {hotel.name} {check_in.date()} - status {status} - {url_str[:100]}...")
+                
+                if status == 200:
+                    try:
+                        json_response = await response.json()
+                        api_data['json'] = json_response
+                        api_data['received'] = True
+                        logger.info(f"[JSON API] ✅ {hotel.name} - Captured roomGridData")
+                        
+                        # Save sample for debugging (optional - first time only)
+                        if session_id:
+                            api_samples_dir = "output/api_samples"
+                            os.makedirs(api_samples_dir, exist_ok=True)
+                            sample_path = os.path.join(api_samples_dir, f"{session_id}_sample.json")
+                            if not os.path.exists(sample_path):
+                                with open(sample_path, 'w', encoding='utf-8') as f:
+                                    json.dump(json_response, f, indent=2, ensure_ascii=False)
+                                logger.debug(f"Saved API sample to {sample_path}")
+                                    
+                    except Exception as e:
+                        logger.warning(f"[JSON API] Parse error for {hotel.name}: {e}")
+                else:
+                    logger.warning(f"[JSON API] ❌ {hotel.name} - Status {status}")
+        except Exception as e:
+            logger.debug(f"Response intercept error: {e}")
 
-    page.on("response", _log_below_fold_response)
+    page.on("response", intercept_room_api)
 
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -185,7 +373,7 @@ async def scrape_hotel_rooms(
         # Dismiss any popups
         await dismiss_hotel_popups(page)
         
-        # Scroll to trigger lazy loading of room content
+        # Scroll to trigger lazy loading and API calls
         for i in range(3):
             await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {(i+1)/4})")
             await asyncio.sleep(1)
@@ -196,14 +384,35 @@ async def scrape_hotel_rooms(
         except Exception:
             pass
         
-        # Wait for room listings to load
+        # Wait for API response (up to 10 seconds)
+        for _ in range(10):
+            if api_data['received']:
+                break
+            await asyncio.sleep(1)
+        
+        date_str = check_in.strftime("%Y-%m-%d")
+        
+        # Try JSON parsing first
+        if api_data['received'] and api_data['json']:
+            logger.info(f"[Parser] Using JSON API for {hotel.name}")
+            rooms = parse_room_json(api_data['json'], hotel, date_str)
+            
+            if rooms:
+                logger.info(f"[JSON Success] {hotel.name}: {len(rooms)} rooms extracted")
+                return rooms
+            else:
+                logger.warning(f"[JSON Empty] {hotel.name}: No valid rooms in JSON, falling back to HTML")
+        else:
+            logger.info(f"[Parser] JSON API not received for {hotel.name}, using HTML fallback")
+        
+        # Fallback to HTML parsing
         room_loaded = await wait_for_room_listings(page)
         
         if not room_loaded:
             logger.warning(f"Room listings not found for {hotel.name} on {check_in.date()}")
             return [RoomData(
                 hotel_name=hotel.name,
-                date=check_in.strftime("%Y-%m-%d"),
+                date=date_str,
                 room_type="No Rooms Found",
                 price=None,
                 currency=hotel.currency,
@@ -230,28 +439,27 @@ async def scrape_hotel_rooms(
         # Additional wait for React to finish rendering
         await asyncio.sleep(2)
         
-        # Parse room data
+        # Parse room data from HTML
         html = await page.content()
         
-        # Save rendered HTML for debugging (first hotel only to avoid too many files)
-        import os
+        # Save rendered HTML for debugging
         if session_id is None:
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         debug_folder = os.path.join("output", "debug_html", session_id)
-        os.makedirs(debug_folder, exist_ok=True)  # Create the full path
+        os.makedirs(debug_folder, exist_ok=True)
         debug_html_path = os.path.join(debug_folder, f"debug_{hotel.name[:30].replace(' ', '_')}_{check_in.strftime('%Y%m%d')}.html")
         if not os.path.exists(debug_html_path):
             with open(debug_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
-            logger.info(f"Saved rendered HTML to {debug_html_path}")
+            logger.debug(f"Saved rendered HTML to {debug_html_path}")
         
         rooms = parse_room_listings(html, hotel, check_in)
         
         if not rooms:
-            logger.warning(f"No rooms parsed for {hotel.name} on {check_in.date()}")
+            logger.warning(f"No rooms parsed from HTML for {hotel.name} on {check_in.date()}")
             return [RoomData(
                 hotel_name=hotel.name,
-                date=check_in.strftime("%Y-%m-%d"),
+                date=date_str,
                 room_type="No Rooms Found",
                 price=None,
                 currency=hotel.currency,
@@ -263,7 +471,7 @@ async def scrape_hotel_rooms(
                 hotel_review_count=hotel.review_count,
             )]
         
-        logger.debug(f"Found {len(rooms)} rooms for {hotel.name} on {check_in.date()}")
+        logger.info(f"[HTML Success] {hotel.name}: {len(rooms)} rooms extracted")
         return rooms
         
     except Exception as e:
@@ -644,6 +852,7 @@ def extract_room_data(room_elem, hotel: HotelInfo, date_str: str) -> Optional[Ro
         # Extract room type/name
         room_type = None
         name_selectors = [
+            {'tag': 'span', 'attrs': {'data-selenium': 'masterroom-title-name'}},
             {'tag': 'span', 'attrs': {'data-selenium': 'room-name'}},
             {'tag': 'h3', 'attrs': {'data-selenium': 'room-name'}},
             {'tag': 'span', 'attrs': {'data-element-name': 'room-type-name'}},
@@ -722,7 +931,7 @@ def extract_room_data(room_elem, hotel: HotelInfo, date_str: str) -> Optional[Ro
                     try:
                         price = float(price_match.group(1).replace(',', '').replace('\xa0', ''))
                         # Sanity check - hotel room prices typically 1000-500000 INR
-                        # This filters out flight prices which can be lower
+                        # 1000 INR minimum helps filter out flight prices
                         if price >= 1000:
                             break
                         else:
