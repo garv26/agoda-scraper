@@ -397,6 +397,45 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+## Troubleshooting & Selector Verification
+
+### Room Type Data Issues?
+
+If you're experiencing issues with the `room_type` column showing incorrect or missing data, the CSS selectors used to extract data from Agoda may be outdated.
+
+**Quick Fix:**
+1. **Start here:** Open **[INDEX.md](INDEX.md)** for navigation
+2. **Fast check:** Use **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** (5 minutes)
+3. **Detailed guide:** See **[HOW_TO_INSPECT_SELECTORS.md](HOW_TO_INSPECT_SELECTORS.md)** (15 minutes)
+
+**Common Issues:**
+- **"No Rooms Found"** → Room container selector outdated
+- **Garbage text in room_type** → Room name selector wrong
+- **Missing prices** → Price selector outdated
+
+See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for complete solutions.
+
+**Testing Tool:**
+```bash
+# Analyze saved HTML files
+python analyze_selectors.py output/debug_html/session/debug_hotel.html
+
+# List all debug HTML files
+python analyze_selectors.py --list
+```
+
+**Documentation:**
+- [INDEX.md](INDEX.md) - Master navigation guide
+- [SUMMARY.md](SUMMARY.md) - Situation overview  
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - 5-min verification checklist
+- [HOW_TO_INSPECT_SELECTORS.md](HOW_TO_INSPECT_SELECTORS.md) - Detailed inspection guide
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common problems & solutions
+- [HTML_STRUCTURE.md](HTML_STRUCTURE.md) - Visual HTML diagrams
+- [SELECTOR_ANALYSIS.md](SELECTOR_ANALYSIS.md) - Technical selector details
+- [README_SELECTORS.md](README_SELECTORS.md) - Main selector overview
+
+**Note:** Agoda's HTML structure may change over time. Regular selector verification is recommended.
+
 ## Legal Notice
 
 ⚠️ **Disclaimer:** This scraper is intended for personal use, research, and educational purposes only.
