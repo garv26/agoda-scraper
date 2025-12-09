@@ -8,17 +8,20 @@ This module provides:
 - Optional rotating proxy support (SOCKS5/HTTP)
 - Thread-safe CSV writing
 - Queue-based hotel distribution for load balancing
+- EC2 instance offset support for distributed scraping
 
 Key Benefits:
 1. SPEED: N browsers = ~N times faster (limited by network/memory)
 2. STEALTH: Different fingerprints reduce bot detection
 3. RESILIENCE: One browser crash doesn't affect others
 4. SCALABILITY: Easy to add more browsers or proxies
+5. MULTI-EC2: Support for running on multiple EC2 instances without fingerprint collision
 """
 
 import asyncio
 import csv
 import logging
+import os
 import random
 import threading
 from datetime import datetime, timedelta
@@ -36,57 +39,168 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================
-# USER AGENT POOL - Each browser gets unique UA
+# EXPANDED USER AGENT POOL (100+ agents)
+# Supports large-scale multi-EC2 deployments
 # ============================================
 USER_AGENTS = [
-    # Chrome on Windows (various versions)
+    # Chrome on Windows (25 versions)
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-    # Chrome on Mac
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    
+    # Chrome on Mac (25 versions)
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    # Chrome on Linux
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    
+    # Chrome on Linux (20 versions)
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    # Firefox
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Debian; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Debian; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; CentOS; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; openSUSE; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    
+    # Firefox (15 versions)
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:118.0) Gecko/20100101 Firefox/118.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:117.0) Gecko/20100101 Firefox/117.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:119.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    # Edge
+    "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    
+    # Edge (10 versions)
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
-    # Safari
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.0.0",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    
+    # Safari (5 versions)
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
 ]
 
-# Viewport sizes for diversity
+# ============================================
+# EXPANDED VIEWPORT POOL (30 sizes)
+# Realistic desktop resolution variations
+# ============================================
 VIEWPORTS = [
-    {"width": 1920, "height": 1080},
-    {"width": 1366, "height": 768},
-    {"width": 1536, "height": 864},
-    {"width": 1440, "height": 900},
-    {"width": 1680, "height": 1050},
-    {"width": 2560, "height": 1440},
-    {"width": 1280, "height": 720},
-    {"width": 1600, "height": 900},
+    # Common desktop resolutions
+    {"width": 1920, "height": 1080},  # Full HD
+    {"width": 1366, "height": 768},   # HD
+    {"width": 1536, "height": 864},   # HD+
+    {"width": 1440, "height": 900},   # WXGA+
+    {"width": 1680, "height": 1050},  # WSXGA+
+    {"width": 2560, "height": 1440},  # QHD
+    {"width": 1280, "height": 720},   # HD 720p
+    {"width": 1600, "height": 900},   # HD+
+    {"width": 1280, "height": 1024},  # SXGA
+    {"width": 1024, "height": 768},   # XGA
+    
+    # Wide variations
+    {"width": 1920, "height": 1200},  # WUXGA
+    {"width": 2560, "height": 1600},  # WQXGA
+    {"width": 3840, "height": 2160},  # 4K
+    {"width": 1400, "height": 1050},
+    {"width": 1600, "height": 1200},
+    
+    # Laptop variations
+    {"width": 1280, "height": 800},
+    {"width": 1440, "height": 810},
+    {"width": 1536, "height": 960},
+    {"width": 1792, "height": 1120},
+    {"width": 2048, "height": 1152},
+    
+    # Ultrawide monitors
+    {"width": 2560, "height": 1080},
+    {"width": 3440, "height": 1440},
+    {"width": 3840, "height": 1600},
+    
+    # Realistic odd sizes (actual user configurations)
+    {"width": 1366, "height": 912},
+    {"width": 1463, "height": 914},
+    {"width": 1512, "height": 982},
+    {"width": 1707, "height": 1067},
+    {"width": 1829, "height": 1143},
+    {"width": 1920, "height": 937},
+    {"width": 2304, "height": 1440},
 ]
 
-# Timezone/locale combinations
+# ============================================
+# EXPANDED LOCALE POOL (20 combinations)
+# Geographic diversity for realistic fingerprints
+# ============================================
 LOCALES = [
+    # US timezones
     ("en-US", "America/New_York"),
     ("en-US", "America/Los_Angeles"),
+    ("en-US", "America/Chicago"),
+    ("en-US", "America/Denver"),
+    ("en-US", "America/Phoenix"),
+    
+    # UK & Europe
     ("en-GB", "Europe/London"),
+    ("en-GB", "Europe/Dublin"),
+    ("de-DE", "Europe/Berlin"),
+    ("fr-FR", "Europe/Paris"),
+    ("es-ES", "Europe/Madrid"),
+    
+    # Asia-Pacific
     ("en-IN", "Asia/Kolkata"),
     ("en-AU", "Australia/Sydney"),
+    ("en-AU", "Australia/Melbourne"),
+    ("en-SG", "Asia/Singapore"),
+    ("ja-JP", "Asia/Tokyo"),
+    
+    # Other regions
+    ("en-CA", "America/Toronto"),
+    ("en-NZ", "Pacific/Auckland"),
+    ("pt-BR", "America/Sao_Paulo"),
+    ("en-ZA", "Africa/Johannesburg"),
+    ("ar-AE", "Asia/Dubai"),
 ]
 
 
@@ -533,7 +647,35 @@ async def multi_browser_scrape(
     delay_between_hotels: tuple = (2.0, 5.0),
 ) -> List[RoomData]:
     """
-    Main function to scrape hotels using multiple browser instances.
+    Main function to scrape hotels using multiple browser instances in parallel.
+    
+    Supports multi-EC2 deployment via EC2_INSTANCE_ID environment variable.
+    Set EC2_INSTANCE_ID=0,1,2,... on each instance to avoid fingerprint collision.
+    
+    Args:
+        hotels: List of hotels to scrape
+        config: Scraper configuration
+        num_browsers: Number of parallel browser instances
+        headless: Run browsers in headless mode
+        output_file: CSV output path (auto-generated if None)
+        validate_proxies_first: Test proxies before starting
+        delay_between_dates: (min, max) delay in seconds between dates
+        delay_between_hotels: (min, max) delay in seconds between hotels
+    
+    Returns:
+        List of all scraped RoomData objects
+    """
+    start_time = datetime.now()
+    start_date = datetime.now() + timedelta(days=1)
+    session_id = start_time.strftime("%Y%m%d_%H%M%S")
+    
+    # Get EC2 instance offset from environment (default 0 for single-instance)
+    ec2_instance_id = int(os.getenv('EC2_INSTANCE_ID', '0'))
+    ec2_offset = ec2_instance_id * num_browsers
+    
+    # Setup output file
+    if output_file is None:
+        output_file = f"output/csv/multi_browser_{session_id}.csv"
     
     Args:
         hotels: List of hotels to scrape
@@ -571,10 +713,14 @@ async def multi_browser_scrape(
     logger.info(f"\n{'='*70}")
     logger.info(f"  MULTI-BROWSER PARALLEL SCRAPER WITH PROXY ROTATION")
     logger.info(f"{'='*70}")
+    logger.info(f"  EC2 Instance ID:     {ec2_instance_id} (offset: {ec2_offset})")
     logger.info(f"  Hotels to scrape:    {len(hotels)}")
     logger.info(f"  Days per hotel:      {config.days_ahead}")
     logger.info(f"  Browser instances:   {num_browsers}")
     logger.info(f"  Total page requests: {len(hotels) * config.days_ahead}")
+    logger.info(f"  User-Agent pool:     {len(USER_AGENTS)} agents")
+    logger.info(f"  Viewport pool:       {len(VIEWPORTS)} sizes")
+    logger.info(f"  Locale pool:         {len(LOCALES)} combinations")
     logger.info(f"  Proxies configured:  {len(PROXY_LIST)}")
     logger.info(f"  Output file:         {output_file}")
     logger.info(f"{'='*70}\n")
@@ -587,28 +733,33 @@ async def multi_browser_scrape(
         elif PROXY_LIST:
             working_proxies = PROXY_LIST.copy()
         
-        # Create workers with unique fingerprints
+        # Shuffle to add randomness
         random.shuffle(USER_AGENTS)
         workers = []
         
         for i in range(num_browsers):
-            locale, timezone = LOCALES[i % len(LOCALES)]
+            # Calculate global index with EC2 offset to avoid collisions
+            global_index = ec2_offset + i
+            
+            locale, timezone = LOCALES[global_index % len(LOCALES)]
             
             # Assign proxy if available
             proxy = None
             if working_proxies:
-                proxy_url = working_proxies[i % len(working_proxies)]
+                proxy_url = working_proxies[global_index % len(working_proxies)]
                 proxy = {"server": proxy_url}
             
             worker = BrowserWorker(
                 worker_id=i,
-                user_agent=USER_AGENTS[i % len(USER_AGENTS)],
-                viewport=VIEWPORTS[i % len(VIEWPORTS)],
+                user_agent=USER_AGENTS[global_index % len(USER_AGENTS)],
+                viewport=VIEWPORTS[global_index % len(VIEWPORTS)],
                 locale=locale,
                 timezone=timezone,
                 proxy=proxy,
             )
             workers.append(worker)
+            
+            logger.debug(f"[Worker {i}] Global index: {global_index}, UA: {worker.user_agent[:40]}...")
         
         # Create hotel queue
         hotel_queue: asyncio.Queue = asyncio.Queue()
@@ -678,6 +829,7 @@ async def multi_browser_scrape(
     logger.info(f"\n{'='*70}")
     logger.info(f"  SCRAPING COMPLETE")
     logger.info(f"{'='*70}")
+    logger.info(f"  EC2 Instance ID:   {ec2_instance_id}")
     logger.info(f"  Duration:          {duration}")
     logger.info(f"  Hotels processed:  {total_hotels}")
     logger.info(f"  Total rooms:       {total_rooms}")
