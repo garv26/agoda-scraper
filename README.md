@@ -1,17 +1,19 @@
 # Agoda Hotel Scraper
 
-A high-performance Python web scraper to extract hotel and room information from Agoda.com. Features **multi-browser parallel processing** for fast, scalable scraping with advanced anti-detection measures and optional proxy support.
+A high-performance Python web scraper to extract hotel and room information from Agoda.com. Features **multi-browser parallel processing** with **JSON API interception** for fast, scalable scraping with advanced anti-detection measures and **multi-EC2 deployment support**.
 
 ## Features
 
 - 🚀 **Parallel Processing** - Multiple browser instances run simultaneously for N× speedup
+- 🌐 **Multi-EC2 Support** - Deploy across multiple EC2 instances without fingerprint collision
+- 🎯 **JSON API Interception** - Primary data extraction via Agoda's internal APIs with HTML fallback
 - 🏨 **Hotel Discovery** - Scrapes hotel listings with infinite scroll support
 - 🛏️ **Room Details** - Extracts room types, prices, amenities, and availability for each date
 - 📍 **Rich Hotel Data** - Captures hotel name, location, star rating, review rating, and review count
 - 📅 **Date Range Support** - Scrape room availability across multiple days (30+ days supported)
 - 💾 **CSV Output** - Thread-safe incremental CSV writing with real-time progress
 - 🔄 **Incremental Saving** - Saves progress after each date to prevent data loss
-- 🛡️ **Advanced Anti-Detection** - Unique browser fingerprints per instance (user agent, viewport, timezone)
+- 🛡️ **Advanced Anti-Detection** - 100+ unique browser fingerprints per instance (user agent, viewport, timezone)
 - 🌐 **Proxy Support** - Optional rotating proxy support (SOCKS5/HTTP) with validation
 - 🔁 **Retry Logic** - Automatic retry on network errors with exponential backoff
 - 📊 **Progress Monitoring** - Real-time progress tracking with ETA estimates
@@ -31,11 +33,16 @@ python run_multi_browser.py --browsers 3 --limit 5 --days 2
 
 # Production: 10 browsers, all hotels, 30 days
 python run_multi_browser.py --browsers 10 --days 30
+
+# Multi-EC2: Set instance ID on each EC2
+export EC2_INSTANCE_ID=0  # EC2 Instance 0
+python run_multi_browser.py --browsers 10 --days 30
 ```
 
 3. **Check results:**
    - CSV output: `output/csv/multi_browser_YYYYMMDD_HHMMSS.csv`
    - Logs: `logs/scraper_YYYYMMDD_HHMMSS.log`
+   - API samples: `output/api_samples/` (for debugging)
 
 **Note:** If you don't have a hotel CSV file, first extract hotel listings:
 ```bash
@@ -57,11 +64,16 @@ start/
 │   ├── multi_browser_scraper.py   # Multi-browser parallel scraper ⭐
 │   ├── browser.py                 # Playwright browser setup with anti-detection
 │   ├── hotel_listing.py           # Hotel search and listing extraction
-│   ├── room_details.py            # Individual hotel room scraping
+│   ├── room_details.py            # Room scraping with JSON API interception + HTML fallback
 │   ├── models.py                  # Data classes (HotelInfo, RoomData, etc.)
 │   └── output.py                  # CSV and JSON export functions
+├── split_hotels/                  # Hotel CSV split for multi-EC2 deployment
+│   ├── hotels_part_1.csv
+│   ├── hotels_part_2.csv
+│   └── ...
 ├── output/                        # Generated data files (gitignored)
 │   ├── csv/                       # CSV output files
+│   ├── api_samples/               # Intercepted JSON API responses (debugging)
 │   └── debug_html/                # Debug HTML snapshots
 └── logs/                          # Scraper log files
 ```
@@ -178,6 +190,31 @@ python run_multi_browser.py --browsers 5 --days 30 \
     --proxy socks5://127.0.0.1:1081
 ```
 
+### Multi-EC2 Deployment
+
+Deploy across multiple EC2 instances for distributed scraping:
+
+```bash
+# EC2 Instance 0 (processes first batch of hotels)
+export EC2_INSTANCE_ID=0
+python run_multi_browser.py --browsers 10 --days 30 --hotels-csv split_hotels/hotels_part_1.csv
+
+# EC2 Instance 1 (processes second batch of hotels)
+export EC2_INSTANCE_ID=1
+python run_multi_browser.py --browsers 10 --days 30 --hotels-csv split_hotels/hotels_part_2.csv
+
+# EC2 Instance 2 (processes third batch of hotels)
+export EC2_INSTANCE_ID=2
+python run_multi_browser.py --browsers 10 --days 30 --hotels-csv split_hotels/hotels_part_3.csv
+```
+
+**Key Points:**
+- Set `EC2_INSTANCE_ID` environment variable on each server (0, 1, 2, ...)
+- Each instance uses unique browser fingerprints automatically (no collision)
+- Supports up to **10 EC2 instances × 10 browsers = 100 concurrent browsers**
+- Split hotel CSV into chunks using `split_hotels/` directory
+- All instances can run same `--browsers N` value safely
+
 ### Command Line Arguments
 
 | Argument | Short | Description | Default |
@@ -276,13 +313,31 @@ With **10 browser instances**:
 
 The multi-browser scraper implements advanced techniques to avoid detection:
 
-### Per-Browser Unique Fingerprints
+### Expanded Browser Fingerprint Pools
 
-Each browser instance gets a **unique fingerprint**:
-- **Diverse User Agents** - 20+ different user agents (Chrome, Firefox, Edge, Safari on Windows/Mac/Linux)
-- **Unique Viewports** - 8 different screen resolutions (1920×1080, 1366×768, 2560×1440, etc.)
-- **Different Locales/Timezones** - Rotates between en-US, en-GB, en-IN, en-AU with matching timezones
-- **Randomized Geolocation** - Slight variations around target location coordinates
+Each browser instance gets a **unique fingerprint** from large rotation pools:
+
+- **100 User Agents** - Diverse mix across browsers and operating systems:
+  - 25 Chrome on Windows (versions 90-130)
+  - 25 Chrome on macOS (versions 90-130)
+  - 14 Chrome on Linux (versions 90-130)
+  - 12 Firefox on Windows/Mac (versions 90-120)
+  - 6 Microsoft Edge (versions 90-120)
+  - 5 Safari on macOS (versions 14-17)
+
+- **30 Unique Viewports** - Realistic screen resolutions including:
+  - Common laptop sizes: 1366×768, 1920×1080, 1536×864
+  - Desktop displays: 2560×1440, 1920×1200, 1680×1050
+  - Ultrawide monitors: 3440×1440, 2560×1080
+  - Odd/realistic sizes: 1707×960, 1463×823, 1873×1054 (adds randomness)
+
+- **20 Locale/Timezone Combinations** - Globally distributed:
+  - US regions: Eastern, Pacific, Central, Mountain
+  - Europe: London, Paris, Berlin, Madrid, Rome
+  - Asia-Pacific: Tokyo, Sydney, Singapore, Mumbai, Hong Kong
+  - Others: Toronto, Dubai, São Paulo, Mexico City, Johannesburg
+
+**Multi-EC2 Support:** With 100 fingerprints available, supports **10 EC2 instances × 10 browsers = 100 concurrent browsers** without collision.
 
 ### Browser Fingerprint Masking
 
@@ -291,6 +346,7 @@ Each browser instance gets a **unique fingerprint**:
 - **Language Spoofing** - Sets `navigator.languages` to match locale
 - **Chrome Object** - Adds fake `window.chrome` object
 - **Permissions API** - Patches permissions API to appear more human
+- **Randomized Geolocation** - Slight variations (±0.5°) around target location coordinates
 
 ### Network-Level Protection
 
@@ -305,6 +361,18 @@ Each browser instance gets a **unique fingerprint**:
 - `--disable-dev-shm-usage` - Prevents shared memory issues
 - `--no-sandbox` - Required for some proxy configurations
 - `--disable-infobars` - Hides automation indicators
+
+### Data Extraction Strategy
+
+**JSON API Interception (Primary):**
+- Intercepts Agoda's `BelowFoldParams/GetSecondaryData` API via Playwright response hooks
+- Extracts structured data from `roomGridData.masterRooms` or `datelessMasterRoomInfo`
+- Significantly faster and cleaner than HTML parsing
+
+**HTML Parsing (Fallback):**
+- Activates when JSON API is unavailable or incomplete
+- Uses BeautifulSoup with enhanced validation to filter garbage text
+- Currently achieving **96.4% data quality success rate**
 
 ## Proxy Configuration
 
@@ -359,27 +427,42 @@ Proxies are automatically validated before use (unless `--skip-proxy-validation`
    - Reduce delays: `--delay-dates 0.3 1.0 --delay-hotels 1.0 3.0`
 
 3. **High memory usage**
-   - Reduce `--browsers` count
-   - Each browser uses ~200MB RAM
+   - Reduce `--browsers` count (each browser uses ~200MB RAM)
+   - Use fewer concurrent browsers per EC2 instance
+   - Monitor memory with `htop` or `free -h`
 
 4. **Network errors / timeouts**
    - The scraper automatically retries on network errors (up to 3 times)
    - If using proxies, ensure they're working: `--skip-proxy-validation` to bypass validation
-   - Increase delays between requests
+   - Increase delays between requests: `--delay-hotels 5.0 10.0`
 
 5. **Blocked by Agoda**
    - Use proxies: `--proxy socks5://...`
    - Increase delays: `--delay-hotels 5.0 10.0`
    - Reduce browser count temporarily
+   - Distribute across multiple EC2 instances with different IP addresses
 
 6. **Browser crashes**
    - Check available memory (each browser needs ~200MB)
    - Try with `--no-headless` to see what's happening
    - Reduce `--browsers` count
+   - Verify Chromium installed correctly: `playwright install chromium --force`
 
 7. **CSV file not updating**
    - CSV writes are thread-safe and happen immediately after each date
    - Check file permissions on `output/csv/` directory
+   - Verify output path is writable
+
+8. **Fingerprint collision warnings (Multi-EC2)**
+   - Ensure `EC2_INSTANCE_ID` is unique per instance (0, 1, 2, ...)
+   - Verify total browsers across all instances ≤ 100
+   - Check logs at startup for fingerprint assignment details
+
+9. **JSON API not working / falling back to HTML**
+   - This is expected behavior - JSON structure varies by region/hotel
+   - HTML fallback achieves 96.4% success rate
+   - Check `output/api_samples/` for intercepted API responses
+   - No action needed unless data quality degrades
 
 ## Dependencies
 

@@ -677,27 +677,6 @@ async def multi_browser_scrape(
     if output_file is None:
         output_file = f"output/csv/multi_browser_{session_id}.csv"
     
-    Args:
-        hotels: List of hotels to scrape
-        config: Scraper configuration
-        num_browsers: Number of parallel browser instances
-        headless: Run browsers in headless mode
-        output_file: Output CSV file path
-        validate_proxies_first: Test proxies before starting
-        delay_between_dates: (min, max) seconds between date scrapes
-        delay_between_hotels: (min, max) seconds between hotel scrapes
-    
-    Returns:
-        List of all scraped room data
-    """
-    start_time = datetime.now()
-    start_date = datetime.now() + timedelta(days=1)
-    session_id = start_time.strftime("%Y%m%d_%H%M%S")
-    
-    # Setup output file
-    if output_file is None:
-        output_file = f"output/csv/multi_browser_{session_id}.csv"
-    
     # CSV headers
     csv_headers = [
         "hotel_name", "hotel_location", "hotel_rating", "hotel_star_rating",
