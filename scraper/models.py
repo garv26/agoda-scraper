@@ -112,9 +112,9 @@ class HotelWithRooms:
 
 class DelayConfig(BaseModel):
     """Configuration for random delays."""
-    between_hotels: tuple[float, float] = Field(default=(6.0, 12.0))
+    between_hotels: tuple[float, float] = Field(default=(8.0, 14.0))
     between_dates: tuple[float, float] = Field(default=(2.0, 4.0))
-    scroll_pause: tuple[float, float] = Field(default=(1.0, 2.0))
+    scroll_pause: tuple[float, float] = Field(default=(2.0, 4.0))
 
 
 class ScraperConfig(BaseModel):

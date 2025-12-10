@@ -178,18 +178,7 @@ LOCALES = [
     ("en-US", "America/New_York"),
     ("en-US", "America/Los_Angeles"),
     ("en-US", "America/Chicago"),
-    ("en-US", "America/Denver"),
-    ("en-US", "America/Phoenix"),
-    ("en-US", "America/Anchorage"),
-    ("en-US", "America/Honolulu"),
-    ("en-US", "America/Detroit"),
-    
-    # UK & Europe (English only)
-    ("en-GB", "Europe/London"),
-    ("en-GB", "Europe/Dublin"),
-    ("en-GB", "Europe/Berlin"),       # English locale with German timezone
-    ("en-GB", "Europe/Paris"),        # English locale with French timezone
-    ("en-GB", "Europe/Madrid"),       # English locale with Spanish timezone
+       # English locale with Spanish timezone
     
     # Asia-Pacific (English locales)
     ("en-IN", "Asia/Kolkata"),
@@ -197,10 +186,7 @@ LOCALES = [
     ("en-AU", "Australia/Melbourne"),
     ("en-SG", "Asia/Singapore"),
     ("en-IN", "Asia/Dubai"),
-    
-    # Other English regions
-    ("en-CA", "America/Toronto"),
-    ("en-NZ", "Pacific/Auckland"),
+
 ]
 
 
