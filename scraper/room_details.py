@@ -5,6 +5,7 @@ import logging
 import asyncio
 import os
 import json
+import random
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 from playwright.async_api import Page
@@ -129,9 +130,159 @@ def is_valid_room_name(name: str) -> bool:
     return True
 
 
+def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> list[RoomData]:
+    """
+    Parse room data from the NEW Agoda room-grid API (v1).
+    
+    API endpoint: /api/v1/property/room-grid
+    
+    Args:
+        json_data: The API response containing 'rooms' array
+        hotel: Hotel information
+        date_str: Date string YYYY-MM-DD
+    
+    Returns:
+        List of RoomData objects
+    """
+    rooms = []
+    
+    room_list = json_data.get('rooms', [])
+    if not room_list:
+        logger.debug(f"No rooms found in room-grid API for {hotel.name}")
+        return rooms
+    
+    logger.debug(f"Found {len(room_list)} rooms in room-grid API")
+    
+    for room in room_list:
+        try:
+            room_name = room.get('name', '').strip()
+            
+            if not room_name or not is_valid_room_name(room_name):
+                logger.debug(f"Skipping invalid room name: {room_name}")
+                continue
+            
+            # Extract facilities (amenities)
+            amenities = []
+            for facility in room.get('facilities', []):
+                if isinstance(facility, dict) and facility.get('text'):
+                    amenities.append(facility['text'])
+            
+            # Extract features (room size, occupancy, bed type)
+            features = room.get('features', [])
+            bed_type = None
+            max_occupancy = None
+            
+            for feature in features:
+                if isinstance(feature, dict):
+                    text = feature.get('text', '')
+                    feature_type = feature.get('type', '')
+                    
+                    if feature_type == 'BEDROOM_LAYOUT':
+                        bed_type = text
+                    elif feature_type == 'MAX_OCCUPANCY':
+                        # Extract number from "Max X adults"
+                        import re
+                        match = re.search(r'(\d+)', text)
+                        if match:
+                            max_occupancy = int(match.group(1))
+            
+            # Process offers (pricing and availability)
+            offers = room.get('offers', [])
+            if not offers:
+                # Room exists but no offers available
+                rooms.append(RoomData(
+                    hotel_name=hotel.name,
+                    date=date_str,
+                    room_type=room_name,
+                    price=None,
+                    currency="INR",
+                    amenities=amenities,
+                    is_available=False,
+                    bed_type=bed_type,
+                    max_occupancy=max_occupancy,
+                    hotel_location=hotel.location,
+                    hotel_rating=hotel.rating,
+                    hotel_star_rating=hotel.star_rating,
+                    hotel_review_count=hotel.review_count,
+                ))
+                continue
+            
+            # Process each offer for this room
+            for offer in offers:
+                try:
+                    # Extract price from new API format
+                    price_obj = offer.get('price', {})
+                    price = None
+                    if isinstance(price_obj, dict):
+                        # Try new API format first: price.final.amountNumber
+                        final_price = price_obj.get('final', {})
+                        if isinstance(final_price, dict):
+                            price = final_price.get('amountNumber') or final_price.get('amount')
+                        
+                        # Fallback to old format if not found
+                        if not price:
+                            price = price_obj.get('perNight', {}).get('exclusive', {}).get('display')
+                        if not price:
+                            price = price_obj.get('perRoomPerNight', {}).get('exclusive', {}).get('display')
+                    
+                    # Extract meal plan and cancellation from benefits
+                    meal_plan = None
+                    cancellation_policy = None
+                    
+                    benefits = offer.get('benefits', [])
+                    for benefit in benefits:
+                        if isinstance(benefit, dict):
+                            text = benefit.get('text', '').lower()
+                            if 'breakfast' in text or 'meal' in text:
+                                meal_plan = benefit.get('text')
+                            elif 'cancel' in text or 'refund' in text:
+                                cancellation_policy = benefit.get('text')
+                    
+                    # Check policies for cancellation
+                    if not cancellation_policy:
+                        policies = offer.get('policies', [])
+                        for policy in policies:
+                            if isinstance(policy, dict):
+                                title = policy.get('title', '').lower()
+                                if 'cancel' in title or 'refund' in title:
+                                    cancellation_policy = policy.get('title')
+                                    break
+                    
+                    # Create room data
+                    rooms.append(RoomData(
+                        hotel_name=hotel.name,
+                        date=date_str,
+                        room_type=room_name,
+                        price=float(price) if price else None,
+                        currency="INR",
+                        amenities=amenities,
+                        is_available=True,
+                        cancellation_policy=cancellation_policy,
+                        meal_plan=meal_plan,
+                        bed_type=bed_type,
+                        max_occupancy=max_occupancy,
+                        hotel_location=hotel.location,
+                        hotel_rating=hotel.rating,
+                        hotel_star_rating=hotel.star_rating,
+                        hotel_review_count=hotel.review_count,
+                    ))
+                    
+                    logger.debug(f"Parsed room offer: {room_name} - ₹{price}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing offer for {room_name}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.warning(f"Error parsing room from room-grid API: {e}")
+            continue
+    
+    return deduplicate_rooms(rooms)
+
+
 def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[RoomData]:
     """
-    Parse room data from Agoda's roomGridData API response.
+    Parse room data from Agoda's LEGACY roomGridData API response.
     
     Args:
         json_data: The full API response (could be nested in various ways)
@@ -143,7 +294,14 @@ def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[Ro
     """
     rooms = []
     
-    # Navigate to masterRooms array
+    # NEW API FORMAT: Check for room-grid v1 format first
+    if 'rooms' in json_data and isinstance(json_data.get('rooms'), list):
+        # Check if this is the new format (has 'propertyId', 'propertyName', etc.)
+        if 'propertyId' in json_data or 'propertyName' in json_data:
+            logger.info(f"Detected NEW room-grid API format for {hotel.name}")
+            return parse_room_grid_api(json_data, hotel, date_str)
+    
+    # LEGACY API FORMAT: Navigate to masterRooms array
     # The data might be at different paths depending on the API endpoint
     master_rooms = None
     
@@ -160,7 +318,7 @@ def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[Ro
         master_rooms = json_data['data'].get('masterRooms', [])
     
     if not master_rooms:
-        logger.warning(f"No masterRooms found in JSON for {hotel.name}")
+        logger.warning(f"No masterRooms found in legacy JSON for {hotel.name}")
         return rooms
     
     logger.debug(f"Found {len(master_rooms)} master rooms in JSON")
@@ -335,17 +493,60 @@ async def scrape_hotel_rooms(
         """Intercept and capture room data API response."""
         try:
             url_str = response.url
-            # Look for the specific API endpoint
-            if "BelowFoldParams/GetSecondaryData" in url_str or "roomGrid" in url_str.lower():
+            
+            # NEW: The primary room data API endpoint (as of Dec 2024)
+            if "/api/v1/property/room-grid" in url_str:
                 status = response.status
-                logger.info(f"[Rooms API] {hotel.name} {check_in.date()} - status {status} - {url_str[:100]}...")
+                logger.info(f"[Room Grid API] {hotel.name} {check_in.date()} - status {status}")
                 
                 if status == 200:
                     try:
                         json_response = await response.json()
-                        api_data['json'] = json_response
-                        api_data['received'] = True
-                        logger.info(f"[JSON API] ✅ {hotel.name} - Captured roomGridData")
+                        # Check if response contains actual room data
+                        if isinstance(json_response, dict) and 'rooms' in json_response:
+                            rooms_count = len(json_response.get('rooms', []))
+                            if rooms_count > 0:
+                                api_data['json'] = json_response
+                                api_data['received'] = True
+                                logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from room-grid API")
+                            else:
+                                logger.info(f"[JSON API] ⚠️  {hotel.name} - room-grid API returned 0 rooms (sold out: {json_response.get('isSoldOut', False)})")
+                        else:
+                            logger.debug(f"[JSON API] ⚠️  {hotel.name} - room-grid API has unexpected structure")
+                                    
+                    except Exception as e:
+                        logger.warning(f"[JSON API] Parse error for {hotel.name}: {e}")
+                else:
+                    logger.warning(f"[JSON API] ❌ {hotel.name} - room-grid API Status {status}")
+            
+            # FALLBACK: Old API endpoints (BelowFoldParams/GetSecondaryData)
+            elif "BelowFoldParams/GetSecondaryData" in url_str:
+                status = response.status
+                logger.debug(f"[Legacy API] {hotel.name} - GetSecondaryData called (status {status})")
+                
+                if status == 200 and not api_data['received']:
+                    try:
+                        json_response = await response.json()
+                        # Check if this old endpoint actually contains room data (not just empty arrays)
+                        rooms_count = 0
+                        if isinstance(json_response, dict):
+                            # Check roomGridData.masterRooms
+                            if 'roomGridData' in json_response:
+                                room_grid = json_response.get('roomGridData', {})
+                                if isinstance(room_grid, dict):
+                                    master_rooms = room_grid.get('masterRooms', [])
+                                    rooms_count = len(master_rooms) if isinstance(master_rooms, list) else 0
+                            # Check direct masterRooms
+                            elif 'masterRooms' in json_response:
+                                master_rooms = json_response.get('masterRooms', [])
+                                rooms_count = len(master_rooms) if isinstance(master_rooms, list) else 0
+                        
+                        if rooms_count > 0:
+                            api_data['json'] = json_response
+                            api_data['received'] = True
+                            logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from legacy API")
+                        else:
+                            logger.debug(f"[JSON API] ⚠️  {hotel.name} - legacy API has no rooms (sold out or wrong endpoint)")
                         
                         # Save sample for debugging (optional - first time only)
                         if session_id:
@@ -367,24 +568,28 @@ async def scrape_hotel_rooms(
     page.on("response", intercept_room_api)
 
     try:
+        # Add random delay before navigation to appear more human-like
+        await random_delay(1, 3)
+        
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(2)  # Optimized initial wait
         
         # Dismiss any popups
         await dismiss_hotel_popups(page)
         
-        # Scroll to trigger lazy loading and API calls
-        for i in range(3):
-            await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {(i+1)/4})")
-            await asyncio.sleep(1)
+        # Human-like scrolling: variable scroll distances and delays
+        scroll_positions = [0.25, 0.5, 0.75, 0.9]
+        for pos in scroll_positions:
+            # Variable scroll distance (more human-like)
+            scroll_distance = random.randint(400, 800)
+            await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
+            # Variable delays between scrolls (1-2 seconds - optimized)
+            await random_delay(1, 2)
         
-        # Wait for network to settle
-        try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
+        # Use fixed delay instead of networkidle (less detectable)
+        await asyncio.sleep(2)
         
-        # Wait for API response (up to 10 seconds)
+        # Wait for API response (up to 10 seconds - optimized)
         for _ in range(10):
             if api_data['received']:
                 break
@@ -427,17 +632,11 @@ async def scrape_hotel_rooms(
         # Expand room listings if there's a "Show more" button
         await expand_room_listings(page)
         
-        # Scroll more to load all room content
-        await scroll_to_bottom(page, scroll_pause_range=(0.5, 1.0), max_scrolls=8)
+        # Scroll more to load all room content (uses config scroll_pause_range)
+        await scroll_to_bottom(page, scroll_pause_range=config.delays.scroll_pause, max_scrolls=8)
         
-        # Wait for any final AJAX to complete
-        try:
-            await page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
-        
-        # Additional wait for React to finish rendering
-        await asyncio.sleep(2)
+        # Use fixed delay instead of networkidle (less detectable)
+        await asyncio.sleep(2)  # Optimized wait for React to finish rendering
         
         # Parse room data from HTML
         html = await page.content()
@@ -521,20 +720,9 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
     except Exception:
         pass
 
-    # Wait for network to settle initially
-    try:
-        await page.wait_for_load_state("networkidle", timeout=10000)
-    except Exception:
-        pass
+    # Use fixed delay instead of networkidle (less detectable)
+    await asyncio.sleep(2)
     
-    # # Try to click on the "Rooms" section/tab to trigger room loading
-    # try:
-    #     rooms_tab = page.locator('a:has-text("Rooms"), button:has-text("Rooms"), [data-element-name*="rooms"]').first
-    #     if await rooms_tab.is_visible(timeout=3000):
-    #         await rooms_tab.click()
-    #         await asyncio.sleep(2)
-    # except Exception:
-    #     pass
     # Try to click on the "Rooms" section/tab to trigger room loading
     rooms_tab_selectors = [
         'a:has-text("Rooms")',
@@ -554,23 +742,22 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
             if await elem.is_visible(timeout=2000):
                 await elem.click()
                 logger.debug(f"Clicked rooms tab with selector: {selector}")
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)  # Optimized wait after clicking
                 break
         except Exception:
             continue
     
-    # Scroll down to the rooms section to trigger lazy loading
-    for i in range(5):
-        await page.evaluate(f'''() => {{
-            window.scrollTo(0, document.body.scrollHeight * {(i+1)/6});
-        }}''')
-        await asyncio.sleep(1.5)
+    # Human-like scrolling: variable scroll distances and delays
+    scroll_positions = [0.2, 0.4, 0.6, 0.8, 0.95]
+    for pos in scroll_positions:
+        # Variable scroll distance (more human-like)
+        scroll_distance = random.randint(300, 700)
+        await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
+        # Variable delays between scrolls (1-2 seconds - optimized)
+        await random_delay(1, 2)
     
-    # Wait for network to settle after scroll
-    try:
-        await page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
+    # Use fixed delay instead of networkidle (less detectable)
+    await asyncio.sleep(2)
     
     # Try a direct wait on typical room selectors before falling back to polling.
     # This helps ensure React has finished injecting the room grid into the DOM.
@@ -590,7 +777,7 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         pass
     
     # Additional wait for React to render
-    await asyncio.sleep(3)
+    await asyncio.sleep(2)
     
     # Poll for room elements with retry
     room_selectors = [
@@ -628,9 +815,10 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
             except Exception:
                 continue
         
-        # Scroll more and wait
-        await page.evaluate("window.scrollBy(0, 500)")
-        await asyncio.sleep(2)
+        # Scroll more with variable distance and wait
+        scroll_distance = random.randint(400, 800)
+        await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
+        await random_delay(1, 2)  # Optimized delays
     
     # Final check: look for actual price patterns in visible text
     try:

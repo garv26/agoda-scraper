@@ -141,18 +141,18 @@ Memory Requirements:
         "--delay-dates",
         type=float,
         nargs=2,
-        default=[0.5, 1.5],
+        default=[2.0, 4.0],
         metavar=("MIN", "MAX"),
-        help="Delay between dates in seconds (default: 0.5 1.5)"
+        help="Delay between dates in seconds (default: 2.0 4.0)"
     )
     
     parser.add_argument(
         "--delay-hotels",
         type=float,
         nargs=2,
-        default=[2.0, 5.0],
+        default=[6.0, 12.0],
         metavar=("MIN", "MAX"),
-        help="Delay between hotels in seconds (default: 2.0 5.0)"
+        help="Delay between hotels in seconds (default: 6.0 12.0)"
     )
     
     parser.add_argument(

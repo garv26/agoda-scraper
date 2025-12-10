@@ -171,7 +171,7 @@ VIEWPORTS = [
 
 # ============================================
 # EXPANDED LOCALE POOL (20 combinations)
-# Geographic diversity for realistic fingerprints
+# ONLY ENGLISH LOCALES - ensures data is always in English
 # ============================================
 LOCALES = [
     # US timezones
@@ -180,27 +180,27 @@ LOCALES = [
     ("en-US", "America/Chicago"),
     ("en-US", "America/Denver"),
     ("en-US", "America/Phoenix"),
+    ("en-US", "America/Anchorage"),
+    ("en-US", "America/Honolulu"),
+    ("en-US", "America/Detroit"),
     
-    # UK & Europe
+    # UK & Europe (English only)
     ("en-GB", "Europe/London"),
     ("en-GB", "Europe/Dublin"),
-    ("de-DE", "Europe/Berlin"),
-    ("fr-FR", "Europe/Paris"),
-    ("es-ES", "Europe/Madrid"),
+    ("en-GB", "Europe/Berlin"),       # English locale with German timezone
+    ("en-GB", "Europe/Paris"),        # English locale with French timezone
+    ("en-GB", "Europe/Madrid"),       # English locale with Spanish timezone
     
-    # Asia-Pacific
+    # Asia-Pacific (English locales)
     ("en-IN", "Asia/Kolkata"),
     ("en-AU", "Australia/Sydney"),
     ("en-AU", "Australia/Melbourne"),
     ("en-SG", "Asia/Singapore"),
-    ("ja-JP", "Asia/Tokyo"),
+    ("en-IN", "Asia/Dubai"),
     
-    # Other regions
+    # Other English regions
     ("en-CA", "America/Toronto"),
     ("en-NZ", "Pacific/Auckland"),
-    ("pt-BR", "America/Sao_Paulo"),
-    ("en-ZA", "Africa/Johannesburg"),
-    ("ar-AE", "Asia/Dubai"),
 ]
 
 
@@ -506,8 +506,8 @@ async def browser_worker_task(
     headless: bool,
     results: List[RoomData],
     results_lock: asyncio.Lock,
-    delay_between_dates: tuple = (0.5, 1.5),
-    delay_between_hotels: tuple = (2.0, 5.0),
+    delay_between_dates: tuple = (2.0, 4.0),
+    delay_between_hotels: tuple = (6.0, 12.0),
     max_retries: int = 3,
 ):
     """
@@ -601,6 +601,12 @@ async def browser_worker_task(
                 
                 logger.info(f"[Browser {worker.worker_id}] ✓ {hotel.name}: {len(hotel_rooms)} rooms")
                 
+                # Session break: every 15 hotels, take a break to avoid detection (optimized frequency)
+                if worker.hotels_processed > 0 and worker.hotels_processed % 15 == 0:
+                    break_duration = random.uniform(20, 40)
+                    logger.info(f"[Browser {worker.worker_id}] Taking session break ({break_duration:.1f}s) after {worker.hotels_processed} hotels...")
+                    await asyncio.sleep(break_duration)
+                
                 # Delay between hotels (staggered by worker ID to desync)
                 base_delay = delay_between_hotels[0] + (worker.worker_id * 0.3)
                 max_delay = delay_between_hotels[1] + (worker.worker_id * 0.5)
@@ -643,8 +649,8 @@ async def multi_browser_scrape(
     headless: bool = True,
     output_file: Optional[str] = None,
     validate_proxies_first: bool = True,
-    delay_between_dates: tuple = (0.5, 1.5),
-    delay_between_hotels: tuple = (2.0, 5.0),
+    delay_between_dates: tuple = (2.0, 4.0),
+    delay_between_hotels: tuple = (6.0, 12.0),
 ) -> List[RoomData]:
     """
     Main function to scrape hotels using multiple browser instances in parallel.

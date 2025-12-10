@@ -2,6 +2,7 @@
 
 import re
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode, quote
@@ -118,19 +119,19 @@ async def navigate_to_search(
     logger.info(f"Navigating to search URL: {url}")
     
     try:
+        # Add random delay before navigation to appear more human-like
+        await random_delay(1, 3)
+        
         await page.goto(url, wait_until="domcontentloaded")
         
-        # Wait for the page to load
-        await random_delay(1, 2)  # Reduced from (2, 4)
+        # Wait for the page to load (optimized delay)
+        await random_delay(2, 4)
         
         # Handle potential popups or overlays
         await dismiss_popups(page)
 
-        # Wait for network to settle
-        try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
+        # Use fixed delay instead of networkidle (less detectable)
+        await asyncio.sleep(2)
         
         # Wait for hotel cards to appear - selectors based on actual Agoda structure
         # From browser inspection: hotels are in "group" with name "Property Card"
@@ -229,7 +230,7 @@ async def click_next_results_page(page: Page) -> bool:
                     await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 except Exception:
                     pass
-                await random_delay(1, 2)
+                await random_delay(2, 4)  # Optimized delay after page navigation
                 return True
         except Exception:
             continue
