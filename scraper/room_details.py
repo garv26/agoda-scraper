@@ -489,6 +489,9 @@ async def scrape_hotel_rooms(
     # Storage for API data
     api_data = {'received': False, 'json': None}
     
+    # Event for immediate API response detection
+    api_received_event = asyncio.Event()
+    
     async def intercept_room_api(response):
         """Intercept and capture room data API response."""
         try:
@@ -508,6 +511,7 @@ async def scrape_hotel_rooms(
                             if rooms_count > 0:
                                 api_data['json'] = json_response
                                 api_data['received'] = True
+                                api_received_event.set()  # Signal immediately
                                 logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from room-grid API")
                             else:
                                 logger.info(f"[JSON API] ⚠️  {hotel.name} - room-grid API returned 0 rooms (sold out: {json_response.get('isSoldOut', False)})")
@@ -544,6 +548,7 @@ async def scrape_hotel_rooms(
                         if rooms_count > 0:
                             api_data['json'] = json_response
                             api_data['received'] = True
+                            api_received_event.set()  # Signal immediately
                             logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from legacy API")
                         else:
                             logger.debug(f"[JSON API] ⚠️  {hotel.name} - legacy API has no rooms (sold out or wrong endpoint)")
@@ -589,11 +594,29 @@ async def scrape_hotel_rooms(
         # Use fixed delay instead of networkidle (less detectable)
         await asyncio.sleep(2)
         
-        # Wait for API response (up to 10 seconds - optimized)
-        for _ in range(10):
-            if api_data['received']:
-                break
-            await asyncio.sleep(1)
+        # Wait for API response with immediate detection using asyncio.Event
+        # After scraping many hotels, API responses can be slower
+        api_wait_timeout = 30  # Increased from 10 to 30 seconds
+        
+        try:
+            # Wait for API response - stops immediately when event is set
+            await asyncio.wait_for(api_received_event.wait(), timeout=api_wait_timeout)
+            logger.debug(f"[API Wait] API received immediately for {hotel.name}")
+        except asyncio.TimeoutError:
+            # API didn't respond within timeout - try scrolling to trigger it
+            logger.debug(f"[API Wait] API not received after {api_wait_timeout}s, trying scroll trigger for {hotel.name}")
+            
+            # Scroll down to trigger lazy-loaded API calls
+            for scroll_pos in [0.3, 0.6, 0.9]:
+                await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {scroll_pos})")
+                
+                # Wait up to 2 seconds per scroll position for API response
+                try:
+                    await asyncio.wait_for(api_received_event.wait(), timeout=2.0)
+                    logger.debug(f"[API Wait] API received after scroll trigger at {scroll_pos*100:.0f}%")
+                    break
+                except asyncio.TimeoutError:
+                    continue
         
         date_str = check_in.strftime("%Y-%m-%d")
         
@@ -606,9 +629,29 @@ async def scrape_hotel_rooms(
                 logger.info(f"[JSON Success] {hotel.name}: {len(rooms)} rooms extracted")
                 return rooms
             else:
+                # Check if API explicitly says sold out
+                json_data = api_data['json']
+                if isinstance(json_data, dict):
+                    is_sold_out = json_data.get('isSoldOut', False)
+                    if is_sold_out:
+                        logger.info(f"[JSON Sold Out] {hotel.name} is sold out for {check_in.date()}")
+                        return [RoomData(
+                            hotel_name=hotel.name,
+                            date=date_str,
+                            room_type="Sold Out",
+                            price=None,
+                            currency=hotel.currency or "INR",
+                            amenities=[],
+                            is_available=False,
+                            hotel_location=hotel.location,
+                            hotel_rating=hotel.rating,
+                            hotel_star_rating=hotel.star_rating,
+                            hotel_review_count=hotel.review_count,
+                        )]
                 logger.warning(f"[JSON Empty] {hotel.name}: No valid rooms in JSON, falling back to HTML")
         else:
-            logger.info(f"[Parser] JSON API not received for {hotel.name}, using HTML fallback")
+            # API not received - might be slow loading
+            logger.info(f"[Parser] JSON API not received for {hotel.name} after {api_wait_timeout}s, trying HTML fallback")
         
         # Fallback to HTML parsing
         room_loaded = await wait_for_room_listings(page)
