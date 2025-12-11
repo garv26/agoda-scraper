@@ -178,7 +178,18 @@ LOCALES = [
     ("en-US", "America/New_York"),
     ("en-US", "America/Los_Angeles"),
     ("en-US", "America/Chicago"),
-       # English locale with Spanish timezone
+    ("en-US", "America/Denver"),
+    ("en-US", "America/Phoenix"),
+    ("en-US", "America/Anchorage"),
+    ("en-US", "America/Honolulu"),
+    ("en-US", "America/Detroit"),
+    
+    # UK & Europe (English only)
+    ("en-GB", "Europe/London"),
+    ("en-GB", "Europe/Dublin"),
+    ("en-GB", "Europe/Berlin"),       # English locale with German timezone
+    ("en-GB", "Europe/Paris"),        # English locale with French timezone
+    ("en-GB", "Europe/Madrid"),       # English locale with Spanish timezone
     
     # Asia-Pacific (English locales)
     ("en-IN", "Asia/Kolkata"),
@@ -186,7 +197,10 @@ LOCALES = [
     ("en-AU", "Australia/Melbourne"),
     ("en-SG", "Asia/Singapore"),
     ("en-IN", "Asia/Dubai"),
-
+    
+    # Other English regions
+    ("en-CA", "America/Toronto"),
+    ("en-NZ", "Pacific/Auckland"),
 ]
 
 
@@ -265,63 +279,6 @@ class ThreadSafeCSVWriter:
                 writer = csv.DictWriter(f, fieldnames=self.headers)
                 writer.writerows(rows)
             self.rows_written += len(rows)
-
-
-class FailedHotelsTracker:
-    """
-    Thread-safe tracker for hotels that failed to scrape rooms.
-    
-    Tracks hotels where:
-    - All dates returned "No Rooms Found" or "Error"
-    - No valid room data was extracted
-    """
-    
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.failed_hotels: List[HotelInfo] = []
-        self.failed_reasons: dict[str, str] = {}  # hotel name -> reason
-    
-    def add_failed_hotel(self, hotel: HotelInfo, reason: str = "No rooms found"):
-        """Add a hotel that failed to scrape."""
-        with self.lock:
-            # Avoid duplicates
-            if hotel.name not in [h.name for h in self.failed_hotels]:
-                self.failed_hotels.append(hotel)
-                self.failed_reasons[hotel.name] = reason
-                logger.info(f"[Failed Hotels] Added {hotel.name}: {reason}")
-    
-    def save_to_csv(self, filepath: str):
-        """Save failed hotels to CSV file for retry."""
-        if not self.failed_hotels:
-            logger.info("No failed hotels to save")
-            return
-        
-        filepath = Path(filepath)
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        
-        headers = ["name", "url", "rating", "review_count", "star_rating", "location", "failure_reason"]
-        
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
-            
-            for hotel in self.failed_hotels:
-                writer.writerow({
-                    "name": hotel.name,
-                    "url": hotel.url,
-                    "rating": hotel.rating if hotel.rating else "",
-                    "review_count": hotel.review_count if hotel.review_count else "",
-                    "star_rating": hotel.star_rating if hotel.star_rating else "",
-                    "location": hotel.location or "",
-                    "failure_reason": self.failed_reasons.get(hotel.name, "Unknown"),
-                })
-        
-        logger.info(f"Saved {len(self.failed_hotels)} failed hotels to {filepath}")
-    
-    def get_count(self) -> int:
-        """Get count of failed hotels."""
-        with self.lock:
-            return len(self.failed_hotels)
 
 
 async def create_browser_with_fingerprint(
@@ -549,9 +506,8 @@ async def browser_worker_task(
     headless: bool,
     results: List[RoomData],
     results_lock: asyncio.Lock,
-    failed_hotels_tracker: Optional['FailedHotelsTracker'] = None,
-    delay_between_dates: tuple = (2.0, 4.0),
-    delay_between_hotels: tuple = (6.0, 12.0),
+    delay_between_dates: tuple = (4.0, 8.0),
+    delay_between_hotels: tuple = (10.0, 20.0),
     max_retries: int = 3,
 ):
     """
@@ -592,8 +548,6 @@ async def browser_worker_task(
                 
                 hotel_rooms = []
                 consecutive_errors = 0
-                dates_with_errors = 0
-                dates_with_no_rooms = 0
                 
                 # Scrape each date for this hotel
                 for day_offset in range(config.days_ahead):
@@ -607,18 +561,9 @@ async def browser_worker_task(
                         hotel_rooms.extend(rooms)
                         
                         # Check if we got real data or error placeholder
-                        if rooms:
-                            first_room = rooms[0]
-                            if first_room.room_type == "Error":
-                                consecutive_errors += 1
-                                dates_with_errors += 1
-                            elif first_room.room_type in ["No Rooms Found", "Not Available"]:
-                                dates_with_no_rooms += 1
-                                # Don't count as consecutive error if it's just "no rooms" (might be sold out)
-                            else:
-                                consecutive_errors = 0  # Reset on success
+                        if rooms and rooms[0].room_type != "Error":
+                            consecutive_errors = 0
                         else:
-                            dates_with_no_rooms += 1
                             consecutive_errors += 1
                         
                         # Write to CSV immediately (thread-safe)
@@ -645,45 +590,20 @@ async def browser_worker_task(
                         logger.warning(f"[Browser {worker.worker_id}] Error on {hotel.name} date {check_in.date()}: {e}")
                         worker.errors += 1
                         consecutive_errors += 1
-                        dates_with_errors += 1
-                
-                # Check if hotel failed to scrape rooms
-                # Consider it failed if:
-                # 1. All dates returned errors (not just "No Rooms Found"), OR
-                # 2. No valid room data was extracted across all dates
-                # Note: "No Rooms Found" might mean sold out, which is valid data
-                valid_rooms = [r for r in hotel_rooms if r.room_type not in ["Error", "No Rooms Found", "Not Available", "Sold Out"]]
-                error_rooms = [r for r in hotel_rooms if r.room_type == "Error"]
-                
-                # Only mark as failed if we got errors (not just "no rooms" which might be legitimate)
-                if not valid_rooms and len(error_rooms) > 0:
-                    # Hotel failed - determine reason
-                    if dates_with_errors >= config.days_ahead * 0.8:  # 80%+ dates had errors
-                        reason = f"API errors on {dates_with_errors}/{config.days_ahead} dates (likely slow API response)"
-                    elif dates_with_errors > 0:
-                        reason = f"API errors on {dates_with_errors}/{config.days_ahead} dates"
-                    else:
-                        reason = "No valid room data extracted"
-                    
-                    if failed_hotels_tracker:
-                        failed_hotels_tracker.add_failed_hotel(hotel, reason)
                 
                 # Update stats
                 worker.hotels_processed += 1
-                worker.rooms_scraped += len(valid_rooms)  # Only count valid rooms
+                worker.rooms_scraped += len(hotel_rooms)
                 
                 # Store in results
                 async with results_lock:
                     results.extend(hotel_rooms)
                 
-                if valid_rooms:
-                    logger.info(f"[Browser {worker.worker_id}] ✓ {hotel.name}: {len(valid_rooms)} valid rooms")
-                else:
-                    logger.warning(f"[Browser {worker.worker_id}] ⚠ {hotel.name}: No valid rooms ({dates_with_errors} errors, {dates_with_no_rooms} no rooms)")
+                logger.info(f"[Browser {worker.worker_id}] ✓ {hotel.name}: {len(hotel_rooms)} rooms")
                 
-                # Session break: every 15 hotels, take a break to avoid detection (optimized frequency)
-                if worker.hotels_processed > 0 and worker.hotels_processed % 15 == 0:
-                    break_duration = random.uniform(20, 40)
+                # Session break: every 10 hotels, take a longer break to avoid detection
+                if worker.hotels_processed > 0 and worker.hotels_processed % 10 == 0:
+                    break_duration = random.uniform(30, 60)
                     logger.info(f"[Browser {worker.worker_id}] Taking session break ({break_duration:.1f}s) after {worker.hotels_processed} hotels...")
                     await asyncio.sleep(break_duration)
                 
@@ -729,8 +649,8 @@ async def multi_browser_scrape(
     headless: bool = True,
     output_file: Optional[str] = None,
     validate_proxies_first: bool = True,
-    delay_between_dates: tuple = (2.0, 4.0),
-    delay_between_hotels: tuple = (6.0, 12.0),
+    delay_between_dates: tuple = (4.0, 8.0),
+    delay_between_hotels: tuple = (10.0, 20.0),
 ) -> List[RoomData]:
     """
     Main function to scrape hotels using multiple browser instances in parallel.
@@ -763,9 +683,6 @@ async def multi_browser_scrape(
     if output_file is None:
         output_file = f"output/csv/multi_browser_{session_id}.csv"
     
-    # Setup failed hotels file
-    failed_hotels_file = f"output/csv/failed_hotels_{session_id}.csv"
-    
     # CSV headers
     csv_headers = [
         "hotel_name", "hotel_location", "hotel_rating", "hotel_star_rating",
@@ -773,9 +690,6 @@ async def multi_browser_scrape(
         "amenities", "availability", "cancellation_policy", "meal_plan",
     ]
     csv_writer = ThreadSafeCSVWriter(output_file, csv_headers)
-    
-    # Failed hotels tracker
-    failed_hotels_tracker = FailedHotelsTracker()
     
     # Results storage
     results: List[RoomData] = []
@@ -851,7 +765,6 @@ async def multi_browser_scrape(
                     headless=headless,
                     results=results,
                     results_lock=results_lock,
-                    failed_hotels_tracker=failed_hotels_tracker,
                     delay_between_dates=delay_between_dates,
                     delay_between_hotels=delay_between_hotels,
                 )
@@ -865,7 +778,6 @@ async def multi_browser_scrape(
                 completed = sum(w.hotels_processed for w in workers)
                 rooms = sum(w.rooms_scraped for w in workers)
                 errors = sum(w.errors for w in workers)
-                failed_count = failed_hotels_tracker.get_count()
                 elapsed = (datetime.now() - start_time).total_seconds()
                 rate = completed / elapsed * 3600 if elapsed > 0 else 0
                 remaining = len(hotels) - completed
@@ -874,7 +786,6 @@ async def multi_browser_scrape(
                 logger.info(
                     f"[Progress] Hotels: {completed}/{len(hotels)} | "
                     f"Rooms: {rooms} | Errors: {errors} | "
-                    f"Failed: {failed_count} | "
                     f"Rate: {rate:.0f}/hr | ETA: {eta_hours:.1f}h"
                 )
                 await asyncio.sleep(60)  # Log every minute
@@ -893,15 +804,11 @@ async def multi_browser_scrape(
         
         await asyncio.gather(*worker_tasks, return_exceptions=True)
     
-    # Save failed hotels to CSV
-    failed_hotels_tracker.save_to_csv(failed_hotels_file)
-    
     # Final summary
     duration = datetime.now() - start_time
     total_hotels = sum(w.hotels_processed for w in workers)
     total_rooms = sum(w.rooms_scraped for w in workers)
     total_errors = sum(w.errors for w in workers)
-    failed_count = failed_hotels_tracker.get_count()
     rate = total_hotels / duration.total_seconds() * 3600 if duration.total_seconds() > 0 else 0
     
     logger.info(f"\n{'='*70}")
@@ -912,11 +819,8 @@ async def multi_browser_scrape(
     logger.info(f"  Hotels processed:  {total_hotels}")
     logger.info(f"  Total rooms:       {total_rooms}")
     logger.info(f"  Total errors:      {total_errors}")
-    logger.info(f"  Failed hotels:     {failed_count}")
     logger.info(f"  Rate:              {rate:.0f} hotels/hour")
     logger.info(f"  Output file:       {output_file}")
-    if failed_count > 0:
-        logger.info(f"  Failed hotels CSV: {failed_hotels_file}")
     logger.info(f"{'='*70}")
     
     # Per-browser stats

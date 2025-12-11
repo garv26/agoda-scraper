@@ -489,9 +489,6 @@ async def scrape_hotel_rooms(
     # Storage for API data
     api_data = {'received': False, 'json': None}
     
-    # Event for immediate API response detection
-    api_received_event = asyncio.Event()
-    
     async def intercept_room_api(response):
         """Intercept and capture room data API response."""
         try:
@@ -511,7 +508,6 @@ async def scrape_hotel_rooms(
                             if rooms_count > 0:
                                 api_data['json'] = json_response
                                 api_data['received'] = True
-                                api_received_event.set()  # Signal immediately
                                 logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from room-grid API")
                             else:
                                 logger.info(f"[JSON API] ⚠️  {hotel.name} - room-grid API returned 0 rooms (sold out: {json_response.get('isSoldOut', False)})")
@@ -548,7 +544,6 @@ async def scrape_hotel_rooms(
                         if rooms_count > 0:
                             api_data['json'] = json_response
                             api_data['received'] = True
-                            api_received_event.set()  # Signal immediately
                             logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from legacy API")
                         else:
                             logger.debug(f"[JSON API] ⚠️  {hotel.name} - legacy API has no rooms (sold out or wrong endpoint)")
@@ -574,10 +569,10 @@ async def scrape_hotel_rooms(
 
     try:
         # Add random delay before navigation to appear more human-like
-        await random_delay(1, 3)
+        await random_delay(2, 5)
         
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(2)  # Optimized initial wait
+        await asyncio.sleep(3)  # Increased initial wait
         
         # Dismiss any popups
         await dismiss_hotel_popups(page)
@@ -588,35 +583,17 @@ async def scrape_hotel_rooms(
             # Variable scroll distance (more human-like)
             scroll_distance = random.randint(400, 800)
             await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
-            # Variable delays between scrolls (1-2 seconds - optimized)
-            await random_delay(1, 2)
+            # Variable delays between scrolls (2-4 seconds)
+            await random_delay(2, 4)
         
         # Use fixed delay instead of networkidle (less detectable)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
-        # Wait for API response with immediate detection using asyncio.Event
-        # After scraping many hotels, API responses can be slower
-        api_wait_timeout = 30  # Increased from 10 to 30 seconds
-        
-        try:
-            # Wait for API response - stops immediately when event is set
-            await asyncio.wait_for(api_received_event.wait(), timeout=api_wait_timeout)
-            logger.debug(f"[API Wait] API received immediately for {hotel.name}")
-        except asyncio.TimeoutError:
-            # API didn't respond within timeout - try scrolling to trigger it
-            logger.debug(f"[API Wait] API not received after {api_wait_timeout}s, trying scroll trigger for {hotel.name}")
-            
-            # Scroll down to trigger lazy-loaded API calls
-            for scroll_pos in [0.3, 0.6, 0.9]:
-                await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {scroll_pos})")
-                
-                # Wait up to 2 seconds per scroll position for API response
-                try:
-                    await asyncio.wait_for(api_received_event.wait(), timeout=2.0)
-                    logger.debug(f"[API Wait] API received after scroll trigger at {scroll_pos*100:.0f}%")
-                    break
-                except asyncio.TimeoutError:
-                    continue
+        # Wait for API response (up to 15 seconds with longer intervals)
+        for _ in range(15):
+            if api_data['received']:
+                break
+            await asyncio.sleep(1)
         
         date_str = check_in.strftime("%Y-%m-%d")
         
@@ -629,29 +606,9 @@ async def scrape_hotel_rooms(
                 logger.info(f"[JSON Success] {hotel.name}: {len(rooms)} rooms extracted")
                 return rooms
             else:
-                # Check if API explicitly says sold out
-                json_data = api_data['json']
-                if isinstance(json_data, dict):
-                    is_sold_out = json_data.get('isSoldOut', False)
-                    if is_sold_out:
-                        logger.info(f"[JSON Sold Out] {hotel.name} is sold out for {check_in.date()}")
-                        return [RoomData(
-                            hotel_name=hotel.name,
-                            date=date_str,
-                            room_type="Sold Out",
-                            price=None,
-                            currency=hotel.currency or "INR",
-                            amenities=[],
-                            is_available=False,
-                            hotel_location=hotel.location,
-                            hotel_rating=hotel.rating,
-                            hotel_star_rating=hotel.star_rating,
-                            hotel_review_count=hotel.review_count,
-                        )]
                 logger.warning(f"[JSON Empty] {hotel.name}: No valid rooms in JSON, falling back to HTML")
         else:
-            # API not received - might be slow loading
-            logger.info(f"[Parser] JSON API not received for {hotel.name} after {api_wait_timeout}s, trying HTML fallback")
+            logger.info(f"[Parser] JSON API not received for {hotel.name}, using HTML fallback")
         
         # Fallback to HTML parsing
         room_loaded = await wait_for_room_listings(page)
@@ -675,11 +632,11 @@ async def scrape_hotel_rooms(
         # Expand room listings if there's a "Show more" button
         await expand_room_listings(page)
         
-        # Scroll more to load all room content (uses config scroll_pause_range)
-        await scroll_to_bottom(page, scroll_pause_range=config.delays.scroll_pause, max_scrolls=8)
+        # Scroll more to load all room content with longer pauses
+        await scroll_to_bottom(page, scroll_pause_range=(2, 4), max_scrolls=8)
         
         # Use fixed delay instead of networkidle (less detectable)
-        await asyncio.sleep(2)  # Optimized wait for React to finish rendering
+        await asyncio.sleep(4)  # Longer wait for React to finish rendering
         
         # Parse room data from HTML
         html = await page.content()
@@ -764,7 +721,7 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         pass
 
     # Use fixed delay instead of networkidle (less detectable)
-    await asyncio.sleep(2)
+    await asyncio.sleep(3)
     
     # Try to click on the "Rooms" section/tab to trigger room loading
     rooms_tab_selectors = [
@@ -785,7 +742,7 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
             if await elem.is_visible(timeout=2000):
                 await elem.click()
                 logger.debug(f"Clicked rooms tab with selector: {selector}")
-                await asyncio.sleep(2)  # Optimized wait after clicking
+                await asyncio.sleep(4)  # Longer wait after clicking
                 break
         except Exception:
             continue
@@ -796,11 +753,11 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         # Variable scroll distance (more human-like)
         scroll_distance = random.randint(300, 700)
         await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
-        # Variable delays between scrolls (1-2 seconds - optimized)
-        await random_delay(1, 2)
+        # Variable delays between scrolls (2-4 seconds)
+        await random_delay(2, 4)
     
     # Use fixed delay instead of networkidle (less detectable)
-    await asyncio.sleep(2)
+    await asyncio.sleep(4)
     
     # Try a direct wait on typical room selectors before falling back to polling.
     # This helps ensure React has finished injecting the room grid into the DOM.
@@ -820,7 +777,7 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         pass
     
     # Additional wait for React to render
-    await asyncio.sleep(2)
+    await asyncio.sleep(3)
     
     # Poll for room elements with retry
     room_selectors = [
@@ -861,7 +818,7 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
         # Scroll more with variable distance and wait
         scroll_distance = random.randint(400, 800)
         await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
-        await random_delay(1, 2)  # Optimized delays
+        await random_delay(2, 4)  # Longer, variable delays
     
     # Final check: look for actual price patterns in visible text
     try:

@@ -120,18 +120,18 @@ async def navigate_to_search(
     
     try:
         # Add random delay before navigation to appear more human-like
-        await random_delay(1, 3)
+        await random_delay(2, 5)
         
         await page.goto(url, wait_until="domcontentloaded")
         
-        # Wait for the page to load (optimized delay)
-        await random_delay(2, 4)
+        # Wait for the page to load (longer delay)
+        await random_delay(3, 6)
         
         # Handle potential popups or overlays
         await dismiss_popups(page)
 
         # Use fixed delay instead of networkidle (less detectable)
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
         
         # Wait for hotel cards to appear - selectors based on actual Agoda structure
         # From browser inspection: hotels are in "group" with name "Property Card"
@@ -230,7 +230,7 @@ async def click_next_results_page(page: Page) -> bool:
                     await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 except Exception:
                     pass
-                await random_delay(2, 4)  # Optimized delay after page navigation
+                await random_delay(3, 6)  # Longer delay after page navigation
                 return True
         except Exception:
             continue
