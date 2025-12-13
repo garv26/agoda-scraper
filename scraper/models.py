@@ -46,6 +46,7 @@ class RoomData:
     meal_plan: Optional[str] = None
     max_occupancy: Optional[int] = None
     bed_type: Optional[str] = None
+    availability_count: Optional[int] = None
     # Hotel-level info for CSV export
     hotel_location: Optional[str] = None
     hotel_rating: Optional[float] = None
@@ -62,6 +63,7 @@ class RoomData:
             "currency": self.currency,
             "amenities": self.amenities,
             "is_available": self.is_available,
+            "availability_count": self.availablity_count,
             "cancellation_policy": self.cancellation_policy,
             "meal_plan": self.meal_plan,
             "max_occupancy": self.max_occupancy,
@@ -74,6 +76,11 @@ class RoomData:
 
     def to_csv_row(self) -> dict:
         """Convert to CSV row format."""
+        # if self.availability_count is not None:
+        #     availability_display = str(self.availability_count)
+        # else:
+        #     availability_display = "Available" if self.is_available else "Not Available"
+        
         return {
             "hotel_name": self.hotel_name,
             "hotel_location": self.hotel_location or "",
@@ -86,6 +93,7 @@ class RoomData:
             "currency": self.currency,
             "amenities": ";".join(self.amenities) if self.amenities else "",
             "availability": "Available" if self.is_available else "Not Available",
+            "availability_count": self.availability_count if self.availability_count is not None else "",
             "cancellation_policy": self.cancellation_policy or "",
             "meal_plan": self.meal_plan or "",
         }

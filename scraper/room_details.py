@@ -161,12 +161,6 @@ def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> lis
                 logger.debug(f"Skipping invalid room name: {room_name}")
                 continue
             
-            # Extract facilities (amenities)
-            amenities = []
-            for facility in room.get('facilities', []):
-                if isinstance(facility, dict) and facility.get('text'):
-                    amenities.append(facility['text'])
-            
             # Extract features (room size, occupancy, bed type)
             features = room.get('features', [])
             bed_type = None
@@ -189,7 +183,14 @@ def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> lis
             # Process offers (pricing and availability)
             offers = room.get('offers', [])
             if not offers:
-                # Room exists but no offers available
+                # Room exists but no offers available - use room-level facilities as fallback
+                amenities = []
+                for facility in room.get('facilities', []):
+                    if isinstance(facility, dict) and facility.get('text'):
+                        facility_text = facility.get('text')
+                        if isinstance(facility_text, str):
+                            amenities.append(facility_text)
+                
                 rooms.append(RoomData(
                     hotel_name=hotel.name,
                     date=date_str,
@@ -198,6 +199,7 @@ def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> lis
                     currency="INR",
                     amenities=amenities,
                     is_available=False,
+                    availability_count=None,
                     bed_type=bed_type,
                     max_occupancy=max_occupancy,
                     hotel_location=hotel.location,
@@ -225,38 +227,77 @@ def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> lis
                         if not price:
                             price = price_obj.get('perRoomPerNight', {}).get('exclusive', {}).get('display')
                     
-                    # Extract meal plan and cancellation from benefits
+                    # Extract amenities from offer benefits (each offer has its own amenities)
+                    amenities = []
+                    benefits = offer.get('benefits', [])
+                    for benefit in benefits:
+                        if isinstance(benefit, dict):
+                            benefit_text = benefit.get('text')
+                            if benefit_text and isinstance(benefit_text, str):
+                                amenities.append(benefit_text)
+                    
+                    # Extract meal plan and cancellation
                     meal_plan = None
                     cancellation_policy = None
                     
-                    benefits = offer.get('benefits', [])
+                    # First, check policies array for cancellation (more structured/reliable)
+                    policies = offer.get('policies', [])
+                    for policy in policies:
+                        if isinstance(policy, dict):
+                            name = policy.get('name', '').lower()
+                            if 'Cancellation policy' in name or 'cancel' in name or 'refund' in name:
+                                # Extract from descriptions array - first element is usually the short form
+                                descriptions = policy.get('descriptions', [])
+                                if descriptions and len(descriptions) > 0:
+                                    cancellation_policy = descriptions[0]  # "Free Cancellation"
+                                else:
+                                    cancellation_policy = None
+                                break
+                    
+                    # Fallback: check benefits array for cancellation
+                    if not cancellation_policy:
+                        for benefit in benefits:
+                            if isinstance(benefit, dict):
+                                text = benefit.get('text', '').lower()
+                                if 'Cancellation' in text or 'Cancellation policy' in text or 'cancel' in text or 'refund' in text:
+                                    cancellation_policy = benefit.get('text')
+                                    break
+                    
+                    # Additional fallback: check bookingDetails.isFreeCancellation
+                    if not cancellation_policy:
+                        booking_details = offer.get('bookingDetails', {})
+                        if isinstance(booking_details, dict):
+                            is_free_cancellation = booking_details.get('isFreeCancellation', False)
+                            if is_free_cancellation:
+                                cancellation_policy = "Free Cancellation"
+                    
+                    # Extract meal plan from benefits
                     for benefit in benefits:
                         if isinstance(benefit, dict):
                             text = benefit.get('text', '').lower()
                             if 'breakfast' in text or 'meal' in text:
                                 meal_plan = benefit.get('text')
-                            elif 'cancel' in text or 'refund' in text:
-                                cancellation_policy = benefit.get('text')
+                                break
                     
-                    # Check policies for cancellation
-                    if not cancellation_policy:
-                        policies = offer.get('policies', [])
-                        for policy in policies:
-                            if isinstance(policy, dict):
-                                title = policy.get('title', '').lower()
-                                if 'cancel' in title or 'refund' in title:
-                                    cancellation_policy = policy.get('title')
-                                    break
-                    
+                    # Extract currency from price object
+                    currency = "INR"  # Default
+                    if isinstance(price_obj, dict):
+                        final_price = price_obj.get('final', {})
+                        if isinstance(final_price, dict):
+                            currency_code = final_price.get('currency', '₹')
+                            currency_map = {'₹': 'INR', '$': 'USD', '€': 'EUR', '£': 'GBP'}
+                            currency = currency_map.get(currency_code, 'INR')
+                    availability_count = None
                     # Create room data
                     rooms.append(RoomData(
                         hotel_name=hotel.name,
                         date=date_str,
                         room_type=room_name,
                         price=float(price) if price else None,
-                        currency="INR",
-                        amenities=amenities,
+                        currency=currency,
+                        amenities=amenities,  # FIXED: Extract from offer benefits, not room facilities
                         is_available=True,
+                        availability_count=availability_count,
                         cancellation_policy=cancellation_policy,
                         meal_plan=meal_plan,
                         bed_type=bed_type,
@@ -276,8 +317,8 @@ def parse_room_grid_api(json_data: dict, hotel: HotelInfo, date_str: str) -> lis
         except Exception as e:
             logger.warning(f"Error parsing room from room-grid API: {e}")
             continue
-    
-    return deduplicate_rooms(rooms)
+    return rooms
+    # return deduplicate_rooms(rooms)
 
 
 def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[RoomData]:
@@ -332,46 +373,7 @@ def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[Ro
                 logger.debug(f"Skipping invalid room name: {room_name}")
                 continue
             
-            # Extract price
-            price = master_room.get('cheapestPrice') or master_room.get('beforeDiscountPrice')
-            
-            # Check availability
-            availability = master_room.get('firstRoomAvailability', 0)
-            is_available = availability > 0 and price is not None
-            
-            # Extract amenities from multiple sources
-            amenities = []
-            
-            # From amenities array
-            if master_room.get('amenities'):
-                for amenity in master_room['amenities']:
-                    if isinstance(amenity, dict):
-                        amenity_name = amenity.get('name') or amenity.get('title', '')
-                        if amenity_name:
-                            amenities.append(amenity_name)
-                    elif isinstance(amenity, str):
-                        amenities.append(amenity)
-            
-            # From features array
-            if master_room.get('features'):
-                for feature in master_room['features']:
-                    if isinstance(feature, dict) and feature.get('title'):
-                        title = feature['title']
-                        # Skip size info, keep actual amenities
-                        if 'Room size:' not in title and 'bed' not in title.lower():
-                            amenities.append(title)
-            
-            # From facility groups
-            if master_room.get('facilityGroups'):
-                for group in master_room['facilityGroups']:
-                    if isinstance(group, dict) and group.get('name'):
-                        amenities.append(group['name'])
-            
-            # Clean amenities
-            amenities = [a.strip() for a in amenities if a and isinstance(a, str)]
-            amenities = list(set(amenities))  # Remove duplicates
-            
-            # Extract bed type
+            # Extract shared room-level properties (same for all offers)
             bed_type = None
             bed_config = master_room.get('bedConfigurationSummary') or master_room.get('beddingConfig')
             if bed_config and isinstance(bed_config, dict):
@@ -381,75 +383,213 @@ def parse_room_json(json_data: dict, hotel: HotelInfo, date_str: str) -> list[Ro
             if not bed_type and master_room.get('numberOfBeds'):
                 bed_type = master_room['numberOfBeds']
             
-            # Extract meal plan from propagandaMessages
-            meal_plan = None
-            propaganda = master_room.get('propagandaMessages', [])
-            for msg in propaganda:
-                if isinstance(msg, dict):
-                    title = msg.get('title', '').lower()
-                    if 'breakfast' in title:
-                        meal_plan = msg.get('title', 'Breakfast Included')
-                        break
+            # Extract max occupancy
+            max_occupancy = master_room.get('maxOccupancy')
             
-            # Also check filters in sub-rooms
-            if not meal_plan and master_room.get('rooms'):
-                for sub_room in master_room['rooms']:
-                    filters = sub_room.get('filters', [])
-                    for f in filters:
+            # Get all room offers for this room type
+            room_offers = master_room.get('rooms', [])
+            if not room_offers or not isinstance(room_offers, list):
+                # If no offers, create one entry with master room data
+                price = master_room.get('cheapestPrice') or master_room.get('beforeDiscountPrice')
+                availability = master_room.get('firstRoomAvailability', 0)
+                is_available = availability > 0 and price is not None
+                
+                # Extract amenities from master room level (fallback)
+                amenities = []
+                room_amenities = master_room.get('amenities')
+                if room_amenities and isinstance(room_amenities, list):
+                    for amenity in room_amenities:
+                        if isinstance(amenity, dict):
+                            amenity_name = amenity.get('name') or amenity.get('title', '')
+                            if amenity_name and isinstance(amenity_name, str):
+                                amenities.append(amenity_name)
+                        elif isinstance(amenity, str):
+                            amenities.append(amenity)
+                
+                amenities = [a.strip() for a in amenities if a and isinstance(a, str) and a.strip()]
+                amenities = list(set(amenities))
+                
+                rooms.append(RoomData(
+                    hotel_name=hotel.name,
+                    date=date_str,
+                    room_type=room_name,
+                    price=float(price) if price else None,
+                    currency="INR",
+                    amenities=amenities,
+                    is_available=is_available,
+                    availability_count=availability,
+                    cancellation_policy=None,
+                    meal_plan=None,
+                    bed_type=bed_type,
+                    max_occupancy=max_occupancy,
+                    hotel_location=hotel.location,
+                    hotel_rating=hotel.rating,
+                    hotel_star_rating=hotel.star_rating,
+                    hotel_review_count=hotel.review_count,
+                ))
+                continue
+            
+            # Process each offer in the rooms array
+            for offer in room_offers:
+                try:
+                    if not isinstance(offer, dict):
+                        continue
+                    
+                    # Extract offer-specific price
+                    price = None
+                    # Try exclusivePrice first (final price)
+                    exclusive_price = offer.get('exclusivePrice', {})
+                    if isinstance(exclusive_price, dict):
+                        price = exclusive_price.get('display') or exclusive_price.get('amount')
+                    
+                    # Fallback to other price fields
+                    if not price:
+                        price = offer.get('price') or offer.get('finalPrice') or offer.get('cheapestPrice')
+                    
+                    # Check availability
+                    availability = offer.get('availability', 0)
+                    is_available = availability > 0 and price is not None
+                    
+                    # Extract amenities from this offer's benefits array
+                    amenities = []
+                    benefits = offer.get('benefits', [])
+                    if benefits and isinstance(benefits, list):
+                        for benefit in benefits:
+                            if isinstance(benefit, dict):
+                                benefit_title = benefit.get('title')
+                                if benefit_title and isinstance(benefit_title, str):
+                                    amenities.append(benefit_title)
+                    
+                    # FALLBACK: From master room amenities array
+                    if not amenities:
+                        room_amenities = master_room.get('amenities')
+                        if room_amenities and isinstance(room_amenities, list):
+                            for amenity in room_amenities:
+                                if isinstance(amenity, dict):
+                                    amenity_name = amenity.get('name') or amenity.get('title', '')
+                                    if amenity_name and isinstance(amenity_name, str):
+                                        amenities.append(amenity_name)
+                                elif isinstance(amenity, str):
+                                    amenities.append(amenity)
+                    
+                    # FALLBACK: From features array
+                    if not amenities and master_room.get('features'):
+                        for feature in master_room['features']:
+                            if isinstance(feature, dict) and feature.get('title'):
+                                title = feature['title']
+                                if 'Room size:' not in title and 'bed' not in title.lower():
+                                    if isinstance(title, str):
+                                        amenities.append(title)
+                    
+                    # FALLBACK: From facility groups
+                    if not amenities and master_room.get('facilityGroups'):
+                        for group in master_room['facilityGroups']:
+                            if isinstance(group, dict):
+                                facilities = group.get('facilities', [])
+                                if facilities and isinstance(facilities, list):
+                                    for facility in facilities:
+                                        if isinstance(facility, dict):
+                                            facility_title = facility.get('title')
+                                            if facility_title and isinstance(facility_title, str):
+                                                amenities.append(facility_title)
+                    
+                    # Clean amenities
+                    amenities = [a.strip() for a in amenities if a and isinstance(a, str) and a.strip()]
+                    amenities = list(set(amenities))
+                    
+                    # Extract cancellation policy from this offer
+                    cancellation_policy = None
+                    cancellation_obj = offer.get('cancellation')
+                    # print("FOUND cancellation:", cancellation_obj)
+
+                    if cancellation_obj and isinstance(cancellation_obj, dict):
+                        # Prefer title field
+                        cancellation_title = cancellation_obj.get('title')
+                        if cancellation_title and isinstance(cancellation_title, str):
+                            cancellation_policy = cancellation_title
+                            if cancellation_policy == "Cancellation policy":
+                                cancellation_policy = None
+                        # Fallback to description
+                        elif not cancellation_policy:
+                            cancellation_desc = cancellation_obj.get('description')
+                            if cancellation_desc and isinstance(cancellation_desc, str):
+                                clean_desc = re.sub(r'<[^>]+>', '', cancellation_desc)
+                                clean_desc = clean_desc.strip()
+                                if clean_desc:
+                                    cancellation_policy = clean_desc
+                                
+                    
+                    # FALLBACK: Check filters for cancellation
+                    if not cancellation_policy:
+                        offer_filters = offer.get('filters', [])
+                        for f in offer_filters:
+                            if isinstance(f, dict):
+                                filter_id = f.get('id', '').lower()
+                                filter_name = f.get('name', '').lower()
+                                if 'refund' in filter_id or 'refund' in filter_name or 'cancel' in filter_name:
+                                    cancellation_policy = f.get('name')
+                                    break
+                    
+                    # Extract meal plan from this offer
+                    meal_plan = None
+                    # Check filters for breakfast
+                    offer_filters = offer.get('filters', [])
+                    for f in offer_filters:
                         if isinstance(f, dict):
                             filter_name = f.get('name', '').lower()
                             if 'breakfast' in filter_name:
                                 meal_plan = f.get('name', 'Breakfast Included')
                                 break
-                    if meal_plan:
-                        break
-            
-            # Extract cancellation policy
-            cancellation_policy = None
-            if master_room.get('rooms'):
-                for sub_room in master_room['rooms']:
-                    # Check for cancellation info in filters or properties
-                    filters = sub_room.get('filters', [])
-                    for f in filters:
-                        if isinstance(f, dict):
-                            filter_id = f.get('id', '').lower()
-                            filter_name = f.get('name', '').lower()
-                            if 'refund' in filter_id or 'refund' in filter_name or 'cancel' in filter_name:
-                                cancellation_policy = f.get('name')
-                                break
-                    if cancellation_policy:
-                        break
-            
-            # Extract max occupancy
-            max_occupancy = master_room.get('maxOccupancy')
-            
-            # Create RoomData object
-            room_data = RoomData(
-                hotel_name=hotel.name,
-                date=date_str,
-                room_type=room_name,
-                price=float(price) if price else None,
-                currency="INR",  # Could extract from API if available
-                amenities=amenities,
-                is_available=is_available,
-                cancellation_policy=cancellation_policy,
-                meal_plan=meal_plan,
-                bed_type=bed_type,
-                max_occupancy=max_occupancy,
-                hotel_location=hotel.location,
-                hotel_rating=hotel.rating,
-                hotel_star_rating=hotel.star_rating,
-                hotel_review_count=hotel.review_count,
-            )
-            
-            rooms.append(room_data)
+                    
+                    # FALLBACK: Check master room propagandaMessages
+                    if not meal_plan:
+                        propaganda = master_room.get('propagandaMessages', [])
+                        for msg in propaganda:
+                            if isinstance(msg, dict):
+                                title = msg.get('title', '').lower()
+                                if 'breakfast' in title:
+                                    meal_plan = msg.get('title', 'Breakfast Included')
+                                    break
+                    
+                    # Extract currency
+                    currency = "INR"  # Default
+                    currency_code = offer.get('currency') or master_room.get('currency')
+                    if currency_code:
+                        currency_map = {'INR': 'INR', 'USD': 'USD', 'EUR': 'EUR', 'GBP': 'GBP', '₹': 'INR', '$': 'USD', '€': 'EUR', '£': 'GBP'}
+                        currency = currency_map.get(currency_code, 'INR')
+                    
+                    # Create RoomData object for this offer
+                    room_data = RoomData(
+                        hotel_name=hotel.name,
+                        date=date_str,
+                        room_type=room_name,
+                        price=float(price) if price else None,
+                        currency=currency,
+                        amenities=amenities,
+                        is_available=is_available,
+                        availability_count=availability if availability > 0 else None,
+                        cancellation_policy=cancellation_policy,
+                        meal_plan=meal_plan,
+                        bed_type=bed_type,
+                        max_occupancy=max_occupancy,
+                        hotel_location=hotel.location,
+                        hotel_rating=hotel.rating,
+                        hotel_star_rating=hotel.star_rating,
+                        hotel_review_count=hotel.review_count,
+                    )
+                    
+                    rooms.append(room_data)
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing offer for {room_name}: {e}")
+                    continue
             logger.debug(f"Parsed room from JSON: {room_name} - ₹{price}")
             
         except Exception as e:
             logger.warning(f"Error parsing master room from JSON: {e}")
             continue
-    
-    return deduplicate_rooms(rooms)
+    return rooms
+    # return deduplicate_rooms(rooms)
 
 
 async def scrape_hotel_rooms(
@@ -487,44 +627,20 @@ async def scrape_hotel_rooms(
     logger.debug(f"Navigating to hotel page: {url}")
 
     # Storage for API data
-    api_data = {'received': False, 'json': None}
+    api_data = {'received': False, 'json': None, 'legacy_received': False, 'room_grid_received': False}
     
     async def intercept_room_api(response):
-        """Intercept and capture room data API response."""
+        """Intercept and capture room data API response. Prioritizes legacy API over room-grid API."""
         try:
             url_str = response.url
-            
-            # NEW: The primary room data API endpoint (as of Dec 2024)
-            if "/api/v1/property/room-grid" in url_str:
-                status = response.status
-                logger.info(f"[Room Grid API] {hotel.name} {check_in.date()} - status {status}")
-                
-                if status == 200:
-                    try:
-                        json_response = await response.json()
-                        # Check if response contains actual room data
-                        if isinstance(json_response, dict) and 'rooms' in json_response:
-                            rooms_count = len(json_response.get('rooms', []))
-                            if rooms_count > 0:
-                                api_data['json'] = json_response
-                                api_data['received'] = True
-                                logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from room-grid API")
-                            else:
-                                logger.info(f"[JSON API] ⚠️  {hotel.name} - room-grid API returned 0 rooms (sold out: {json_response.get('isSoldOut', False)})")
-                        else:
-                            logger.debug(f"[JSON API] ⚠️  {hotel.name} - room-grid API has unexpected structure")
-                                    
-                    except Exception as e:
-                        logger.warning(f"[JSON API] Parse error for {hotel.name}: {e}")
-                else:
-                    logger.warning(f"[JSON API] ❌ {hotel.name} - room-grid API Status {status}")
-            
-            # FALLBACK: Old API endpoints (BelowFoldParams/GetSecondaryData)
-            elif "BelowFoldParams/GetSecondaryData" in url_str:
+            # PRIORITY 1: Legacy API endpoints (BelowFoldParams/GetSecondaryData)
+            if "BelowFoldParams/GetSecondaryData" in url_str:
                 status = response.status
                 logger.debug(f"[Legacy API] {hotel.name} - GetSecondaryData called (status {status})")
                 
-                if status == 200 and not api_data['received']:
+                api_data['legacy_received'] = True  # Mark that legacy API was called
+                
+                if status == 200:
                     try:
                         json_response = await response.json()
                         # Check if this old endpoint actually contains room data (not just empty arrays)
@@ -542,9 +658,10 @@ async def scrape_hotel_rooms(
                                 rooms_count = len(master_rooms) if isinstance(master_rooms, list) else 0
                         
                         if rooms_count > 0:
+                            # Always prioritize legacy API - overwrite if room-grid API was already captured
                             api_data['json'] = json_response
                             api_data['received'] = True
-                            logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from legacy API")
+                            logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from legacy API (PRIORITY)")
                         else:
                             logger.debug(f"[JSON API] ⚠️  {hotel.name} - legacy API has no rooms (sold out or wrong endpoint)")
                         
@@ -561,7 +678,39 @@ async def scrape_hotel_rooms(
                     except Exception as e:
                         logger.warning(f"[JSON API] Parse error for {hotel.name}: {e}")
                 else:
-                    logger.warning(f"[JSON API] ❌ {hotel.name} - Status {status}")
+                    logger.warning(f"[JSON API] ❌ {hotel.name} - Legacy API Status {status}")
+            # PRIORITY 2: Fallback to room-grid API (only if legacy API wasn't received or had no rooms)
+            elif "/api/v1/property/room-grid" in url_str:
+                status = response.status
+                logger.info(f"[Room Grid API] {hotel.name} {check_in.date()} - status {status}")
+                
+                api_data['room_grid_received'] = True  # Mark that room-grid API was called
+                
+                if status == 200:
+                    # Only use room-grid API if legacy API wasn't already captured
+                    if not api_data['received']:
+                        try:
+                            json_response = await response.json()
+                            # Check if response contains actual room data
+                            if isinstance(json_response, dict) and 'rooms' in json_response:
+                                rooms_count = len(json_response.get('rooms', []))
+                                if rooms_count > 0:
+                                    api_data['json'] = json_response
+                                    api_data['received'] = True
+                                    logger.info(f"[JSON API] ✅ {hotel.name} - Captured {rooms_count} rooms from room-grid API (FALLBACK)")
+                                else:
+                                    logger.info(f"[JSON API] ⚠️  {hotel.name} - room-grid API returned 0 rooms (sold out: {json_response.get('isSoldOut', False)})")
+                            else:
+                                logger.debug(f"[JSON API] ⚠️  {hotel.name} - room-grid API has unexpected structure")
+                                        
+                        except Exception as e:
+                            logger.warning(f"[JSON API] Parse error for {hotel.name}: {e}")
+                    else:
+                        logger.debug(f"[JSON API] ⚠️  {hotel.name} - Skipping room-grid API (legacy API already captured)")
+                else:
+                    logger.warning(f"[JSON API] ❌ {hotel.name} - room-grid API Status {status}")
+            
+            
         except Exception as e:
             logger.debug(f"Response intercept error: {e}")
 
@@ -577,23 +726,42 @@ async def scrape_hotel_rooms(
         # Dismiss any popups
         await dismiss_hotel_popups(page)
         
-        # Human-like scrolling: variable scroll distances and delays
-        scroll_positions = [0.25, 0.5, 0.75, 0.9]
-        for pos in scroll_positions:
-            # Variable scroll distance (more human-like)
-            scroll_distance = random.randint(400, 800)
-            await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
-            # Variable delays between scrolls (2-4 seconds)
-            await random_delay(2, 4)
-        
-        # Use fixed delay instead of networkidle (less detectable)
-        await asyncio.sleep(3)
-        
-        # Wait for API response (up to 15 seconds with longer intervals)
-        for _ in range(15):
-            if api_data['received']:
-                break
+        # Scroll to trigger lazy loading and API calls
+        for i in range(3):
+            await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {(i+1)/4})")
             await asyncio.sleep(1)
+        
+        # Wait for network to settle
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        
+        # STEP 1: Wait for legacy API first (up to 7 seconds)
+        logger.debug(f"[API Wait] Waiting for legacy API for {hotel.name}...")
+        for _ in range(7):
+            if api_data['legacy_received']:
+                # Legacy API was called, check if we got data
+                if api_data['received'] and api_data['json']:
+                    logger.debug(f"[API Wait] Legacy API provided rooms for {hotel.name}")
+                    break  # Got legacy API with rooms
+                # Legacy API was called but no rooms yet, wait a bit more then check again
+                await asyncio.sleep(0.5)
+                if api_data['received'] and api_data['json']:
+                    break  # Got rooms after the wait
+            await asyncio.sleep(1)
+        
+        # STEP 2: If legacy API didn't provide rooms, wait for room-grid API (up to 5 more seconds)
+        if not api_data['received'] or not api_data['json']:
+            if api_data['legacy_received']:
+                logger.debug(f"[API Wait] Legacy API called but no rooms found, waiting for room-grid API for {hotel.name}...")
+            else:
+                logger.debug(f"[API Wait] Legacy API not called, waiting for room-grid API for {hotel.name}...")
+            
+            for _ in range(5):
+                if api_data['received']:
+                    break
+                await asyncio.sleep(1)
         
         date_str = check_in.strftime("%Y-%m-%d")
         
@@ -607,71 +775,83 @@ async def scrape_hotel_rooms(
                 return rooms
             else:
                 logger.warning(f"[JSON Empty] {hotel.name}: No valid rooms in JSON, falling back to HTML")
+                # HTML parsing is currently disabled, return empty list
+                logger.warning(f"[HTML Fallback] HTML parsing disabled for {hotel.name}, returning empty list")
+                return []
         else:
             logger.info(f"[Parser] JSON API not received for {hotel.name}, using HTML fallback")
+            # HTML parsing is currently disabled, return empty list
+            logger.warning(f"[HTML Fallback] HTML parsing disabled for {hotel.name}, returning empty list")
+            return []
         
         # Fallback to HTML parsing
-        room_loaded = await wait_for_room_listings(page)
+        # room_loaded = await wait_for_room_listings(page)
         
-        if not room_loaded:
-            logger.warning(f"Room listings not found for {hotel.name} on {check_in.date()}")
-            return [RoomData(
-                hotel_name=hotel.name,
-                date=date_str,
-                room_type="No Rooms Found",
-                price=None,
-                currency=hotel.currency,
-                amenities=[],
-                is_available=False,
-                hotel_location=hotel.location,
-                hotel_rating=hotel.rating,
-                hotel_star_rating=hotel.star_rating,
-                hotel_review_count=hotel.review_count,
-            )]
+        # if not room_loaded:
+        #     logger.warning(f"Room listings not found for {hotel.name} on {check_in.date()}")
+        #     return [RoomData(
+        #         hotel_name=hotel.name,
+        #         date=date_str,
+        #         room_type="No Rooms Found",
+        #         price=None,
+        #         currency=hotel.currency,
+        #         amenities=[],
+        #         is_available=False,
+        #         hotel_location=hotel.location,
+        #         hotel_rating=hotel.rating,
+        #         hotel_star_rating=hotel.star_rating,
+        #         hotel_review_count=hotel.review_count,
+        #     )]
         
-        # Expand room listings if there's a "Show more" button
-        await expand_room_listings(page)
+        # # Expand room listings if there's a "Show more" button
+        # await expand_room_listings(page)
         
-        # Scroll more to load all room content with longer pauses
-        await scroll_to_bottom(page, scroll_pause_range=(2, 4), max_scrolls=8)
+        # # Scroll more to load all room content with longer pauses
+        # await scroll_to_bottom(page, scroll_pause_range=(2, 4), max_scrolls=8)
         
-        # Use fixed delay instead of networkidle (less detectable)
-        await asyncio.sleep(4)  # Longer wait for React to finish rendering
+        # # Wait for any final AJAX to complete
+        # try:
+        #     await page.wait_for_load_state("networkidle", timeout=5000)
+        # except Exception:
+        #     pass
         
-        # Parse room data from HTML
-        html = await page.content()
+        # # Additional wait for React to finish rendering
+        # await asyncio.sleep(2)
         
-        # Save rendered HTML for debugging
-        if session_id is None:
-            session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        debug_folder = os.path.join("output", "debug_html", session_id)
-        os.makedirs(debug_folder, exist_ok=True)
-        debug_html_path = os.path.join(debug_folder, f"debug_{hotel.name[:30].replace(' ', '_')}_{check_in.strftime('%Y%m%d')}.html")
-        if not os.path.exists(debug_html_path):
-            with open(debug_html_path, "w", encoding="utf-8") as f:
-                f.write(html)
-            logger.debug(f"Saved rendered HTML to {debug_html_path}")
+        # # Parse room data from HTML
+        # html = await page.content()
         
-        rooms = parse_room_listings(html, hotel, check_in)
+        # # Save rendered HTML for debugging
+        # if session_id is None:
+        #     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # debug_folder = os.path.join("output", "debug_html", session_id)
+        # os.makedirs(debug_folder, exist_ok=True)
+        # debug_html_path = os.path.join(debug_folder, f"debug_{hotel.name[:30].replace(' ', '_')}_{check_in.strftime('%Y%m%d')}.html")
+        # if not os.path.exists(debug_html_path):
+        #     with open(debug_html_path, "w", encoding="utf-8") as f:
+        #         f.write(html)
+        #     logger.debug(f"Saved rendered HTML to {debug_html_path}")
         
-        if not rooms:
-            logger.warning(f"No rooms parsed from HTML for {hotel.name} on {check_in.date()}")
-            return [RoomData(
-                hotel_name=hotel.name,
-                date=date_str,
-                room_type="No Rooms Found",
-                price=None,
-                currency=hotel.currency,
-                amenities=[],
-                is_available=False,
-                hotel_location=hotel.location,
-                hotel_rating=hotel.rating,
-                hotel_star_rating=hotel.star_rating,
-                hotel_review_count=hotel.review_count,
-            )]
+        # rooms = parse_room_listings(html, hotel, check_in)
         
-        logger.info(f"[HTML Success] {hotel.name}: {len(rooms)} rooms extracted")
-        return rooms
+        # if not rooms:
+        #     logger.warning(f"No rooms parsed from HTML for {hotel.name} on {check_in.date()}")
+        #     return [RoomData(
+        #         hotel_name=hotel.name,
+        #         date=date_str,
+        #         room_type="No Rooms Found",
+        #         price=None,
+        #         currency=hotel.currency,
+        #         amenities=[],
+        #         is_available=False,
+        #         hotel_location=hotel.location,
+        #         hotel_rating=hotel.rating,
+        #         hotel_star_rating=hotel.star_rating,
+        #         hotel_review_count=hotel.review_count,
+        #     )]
+        
+        # logger.info(f"[HTML Success] {hotel.name}: {len(rooms)} rooms extracted")
+        # return rooms
         
     except Exception as e:
         logger.error(f"Error scraping rooms for {hotel.name}: {e}")
@@ -720,9 +900,20 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
     except Exception:
         pass
 
-    # Use fixed delay instead of networkidle (less detectable)
-    await asyncio.sleep(3)
+    # Wait for network to settle initially
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
     
+    # # Try to click on the "Rooms" section/tab to trigger room loading
+    # try:
+    #     rooms_tab = page.locator('a:has-text("Rooms"), button:has-text("Rooms"), [data-element-name*="rooms"]').first
+    #     if await rooms_tab.is_visible(timeout=3000):
+    #         await rooms_tab.click()
+    #         await asyncio.sleep(2)
+    # except Exception:
+    #     pass
     # Try to click on the "Rooms" section/tab to trigger room loading
     rooms_tab_selectors = [
         'a:has-text("Rooms")',
@@ -742,22 +933,23 @@ async def wait_for_room_listings(page: Page, timeout: int = 30000) -> bool:
             if await elem.is_visible(timeout=2000):
                 await elem.click()
                 logger.debug(f"Clicked rooms tab with selector: {selector}")
-                await asyncio.sleep(4)  # Longer wait after clicking
+                await asyncio.sleep(3)
                 break
         except Exception:
             continue
     
-    # Human-like scrolling: variable scroll distances and delays
-    scroll_positions = [0.2, 0.4, 0.6, 0.8, 0.95]
-    for pos in scroll_positions:
-        # Variable scroll distance (more human-like)
-        scroll_distance = random.randint(300, 700)
-        await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
-        # Variable delays between scrolls (2-4 seconds)
-        await random_delay(2, 4)
+    # Scroll down to the rooms section to trigger lazy loading
+    for i in range(5):
+        await page.evaluate(f'''() => {{
+            window.scrollTo(0, document.body.scrollHeight * {(i+1)/6});
+        }}''')
+        await asyncio.sleep(1.5)
     
-    # Use fixed delay instead of networkidle (less detectable)
-    await asyncio.sleep(4)
+    # Wait for network to settle after scroll
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
     
     # Try a direct wait on typical room selectors before falling back to polling.
     # This helps ensure React has finished injecting the room grid into the DOM.
@@ -1226,6 +1418,10 @@ def extract_currency(text: str) -> str:
 def extract_amenities(room_elem) -> list[str]:
     """Extract room amenities from room element."""
     amenities = []
+    
+    # Safety check: if room_elem is None, return empty list
+    if room_elem is None:
+        return amenities
     
     # Look for amenity-related elements
     amenity_selectors = [

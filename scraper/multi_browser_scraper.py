@@ -180,9 +180,6 @@ LOCALES = [
     ("en-US", "America/Chicago"),
     ("en-US", "America/Denver"),
     ("en-US", "America/Phoenix"),
-    ("en-US", "America/Anchorage"),
-    ("en-US", "America/Honolulu"),
-    ("en-US", "America/Detroit"),
     
     # UK & Europe (English only)
     ("en-GB", "Europe/London"),
@@ -222,6 +219,8 @@ PROXY_LIST: List[str] = [
     # "socks5://127.0.0.1:1081",
     # "socks5://127.0.0.1:1082",
     # "socks5://your-vps-ip:1080",
+    # "http://13.233.144.152:8888",
+    # "http://3.109.108.19:8888"
 ]
 
 
@@ -488,6 +487,7 @@ async def scrape_with_retry(
         currency=hotel.currency or "INR",
         amenities=[],
         is_available=False,
+        availability_count=None,
         hotel_location=hotel.location,
         hotel_rating=hotel.rating,
         hotel_star_rating=hotel.star_rating,
@@ -687,7 +687,7 @@ async def multi_browser_scrape(
     csv_headers = [
         "hotel_name", "hotel_location", "hotel_rating", "hotel_star_rating",
         "hotel_review_count", "date", "room_type", "price", "currency",
-        "amenities", "availability", "cancellation_policy", "meal_plan",
+        "amenities", "availability","availability_count", "cancellation_policy", "meal_plan",
     ]
     csv_writer = ThreadSafeCSVWriter(output_file, csv_headers)
     
