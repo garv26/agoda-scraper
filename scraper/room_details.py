@@ -632,6 +632,10 @@ async def scrape_hotel_rooms(
     async def intercept_room_api(response):
         """Intercept and capture room data API response. Prioritizes legacy API over room-grid API."""
         try:
+            # If the page/context is closing, skip expensive response parsing to avoid protocol errors
+            if page.is_closed():
+                return
+            
             url_str = response.url
             # PRIORITY 1: Legacy API endpoints (BelowFoldParams/GetSecondaryData)
             if "BelowFoldParams/GetSecondaryData" in url_str:
@@ -642,6 +646,10 @@ async def scrape_hotel_rooms(
                 
                 if status == 200:
                     try:
+                        try:
+                            await response.finished()
+                        except Exception:
+                            pass
                         json_response = await response.json()
                         # Check if this old endpoint actually contains room data (not just empty arrays)
                         rooms_count = 0
@@ -690,6 +698,10 @@ async def scrape_hotel_rooms(
                     # Only use room-grid API if legacy API wasn't already captured
                     if not api_data['received']:
                         try:
+                            try:
+                                await response.finished()
+                            except Exception:
+                                pass
                             json_response = await response.json()
                             # Check if response contains actual room data
                             if isinstance(json_response, dict) and 'rooms' in json_response:
@@ -719,8 +731,38 @@ async def scrape_hotel_rooms(
     try:
         # Add random delay before navigation to appear more human-like
         await random_delay(2, 5)
-        
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+        nav_attempts = 3
+        nav_timeout_ms = 120000
+        navigation_ready_selector = (
+            '[data-selenium*="room"], [data-element-name*="room"], #rooms, #roomsAndRates'
+        )
+
+        last_nav_error = None
+        for attempt in range(nav_attempts):
+            try:
+                await page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=nav_timeout_ms,
+                )
+                # Lightweight wait for a room-related element; ignore if it never appears
+                try:
+                    await page.wait_for_selector(navigation_ready_selector, timeout=8000)
+                except Exception:
+                    pass
+                break
+            except Exception as nav_err:
+                last_nav_error = nav_err
+                if attempt < nav_attempts - 1:
+                    backoff = 3 * (attempt + 1)
+                    logger.warning(
+                        f"[Nav Retry] {hotel.name} attempt {attempt+1}/{nav_attempts} failed ({nav_err}); retrying in {backoff}s"
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    raise last_nav_error
+
         await asyncio.sleep(3)  # Increased initial wait
         
         # Dismiss any popups

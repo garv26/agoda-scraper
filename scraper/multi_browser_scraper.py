@@ -219,8 +219,8 @@ PROXY_LIST: List[str] = [
     # "socks5://127.0.0.1:1081",
     # "socks5://127.0.0.1:1082",
     # "socks5://your-vps-ip:1080",
-    # "http://13.233.144.152:8888",
-    # "http://3.109.108.19:8888"
+    # "http://13.201.22.228:8888",
+    # "http://15.207.110.254:8888"
 ]
 
 
@@ -378,7 +378,7 @@ async def create_browser_with_fingerprint(
     
     # Longer timeouts for proxied connections
     timeout = 45000 if worker.proxy else 30000
-    nav_timeout = 90000 if worker.proxy else 60000
+    nav_timeout = 150000 if worker.proxy else 120000
     page.set_default_timeout(timeout)
     page.set_default_navigation_timeout(nav_timeout)
     
@@ -560,6 +560,11 @@ async def browser_worker_task(
                         )
                         hotel_rooms.extend(rooms)
                         
+                        # Track progress as soon as we get usable room data (avoid waiting for hotel completion)
+                        successful_rooms = [r for r in rooms if r.room_type != "Error"]
+                        if successful_rooms:
+                            worker.rooms_scraped += len(successful_rooms)
+                        
                         # Check if we got real data or error placeholder
                         if rooms and rooms[0].room_type != "Error":
                             consecutive_errors = 0
@@ -593,7 +598,6 @@ async def browser_worker_task(
                 
                 # Update stats
                 worker.hotels_processed += 1
-                worker.rooms_scraped += len(hotel_rooms)
                 
                 # Store in results
                 async with results_lock:
